@@ -23,15 +23,33 @@ class MainPanelView(discord.ui.View):
         else:
             await itx.followup.send("RoutineCog를 찾을 수 없습니다.", ephemeral=True)
 
-    @discord.ui.button(label="루틴 추가", custom_id="ui:add_routine")
+    @discord.ui.button(label="루틴 관리", custom_id="ui:manage_routines")
     async def btn_add_routine(self, itx: discord.Interaction, btn: discord.ui.Button):
-        print("MainPanelView: 루틴 추가 버튼 클릭 by", itx.user)
-        await itx.response.send_modal(AddRoutineModal())
+        print("MainPanelView: 루틴 관리 버튼 클릭 by", itx.user)
+        await itx.response.defer(ephemeral=True)
+        cog = itx.client.get_cog("UICog")
+        if cog:
+            try:
+                await cog.open_routine_manager(itx)
+            except Exception as e:
+                print("open_routine_manager 에러:", e)
+                await itx.followup.send("루틴 관리 열기 중 오류가 발생했습니다.", ephemeral=True)
+        else:
+            await itx.followup.send("UICog를 찾을 수 없습니다.", ephemeral=True)
 
-    @discord.ui.button(label="목표 추가", custom_id="ui:add_goal")
+    @discord.ui.button(label="목표 관리", custom_id="ui:manage_goals")
     async def btn_add_goal(self, itx: discord.Interaction, btn: discord.ui.Button):
-        print("MainPanelView: 목표 추가 버튼 클릭 by", itx.user)
-        await itx.response.send_modal(AddGoalModal())
+        print("MainPanelView: 목표 관리 버튼 클릭 by", itx.user)
+        await itx.response.defer(ephemeral=True)
+        cog = itx.client.get_cog("UICog")
+        if cog:
+            try:
+                await cog.open_goal_manager(itx)
+            except Exception as e:
+                print("open_goal_manager 에러:", e)
+                await itx.followup.send("목표 관리 열기 중 오류가 발생했습니다.", ephemeral=True)
+        else:
+            await itx.followup.send("UICog를 찾을 수 없습니다.", ephemeral=True)
 
     @discord.ui.button(label="리포트", custom_id="ui:report:menu")
     async def btn_report(self, itx: discord.Interaction, btn: discord.ui.Button):
@@ -163,3 +181,116 @@ class GoalListView(discord.ui.View):
 
         btn_inc.callback = inc_cb
         self.add_item(btn_inc)
+
+
+class RoutineManagerView(discord.ui.View):
+    def __init__(self, routines: list, timeout: Optional[float] = None):
+        """루틴 목록을 받아 각 항목에 대해 편집/삭제 버튼을 제공하고, 하단에 '루틴 추가' 버튼을 둡니다."""
+        super().__init__(timeout=timeout)
+        self.routines = routines
+
+        # 각 루틴에 대해 Edit / Delete 버튼 추가
+        for r in routines:
+            rid = r.get('id')
+            name_label = r.get('name') or '무명 루틴'
+
+            # 편집 버튼
+            btn_edit = discord.ui.Button(label=f"✏️ {name_label}", style=discord.ButtonStyle.secondary, custom_id=f"rm:edit:{rid}")
+            def make_edit_cb(rid_inner: int):
+                async def cb(itx: discord.Interaction):
+                    print(f"RoutineManagerView: edit 클릭 rid={rid_inner} by", itx.user)
+                    await itx.response.defer(ephemeral=True)
+                    cog = itx.client.get_cog('UICog')
+                    if cog:
+                        try:
+                            await cog.open_edit_routine_modal(itx, rid_inner)
+                        except Exception as e:
+                            print('open_edit_routine_modal 에러:', e)
+                            await itx.followup.send('루틴 편집 열기 중 오류가 발생했습니다.', ephemeral=True)
+                    else:
+                        await itx.followup.send('UICog를 찾을 수 없습니다.', ephemeral=True)
+                return cb
+            btn_edit.callback = make_edit_cb(rid)
+            self.add_item(btn_edit)
+
+            # 삭제 버튼
+            btn_del = discord.ui.Button(label=f"🗑️ 삭제", style=discord.ButtonStyle.danger, custom_id=f"rm:delete:{rid}")
+            def make_del_cb(rid_inner: int):
+                async def cb(itx: discord.Interaction):
+                    print(f"RoutineManagerView: delete 클릭 rid={rid_inner} by", itx.user)
+                    await itx.response.defer(ephemeral=True)
+                    cog = itx.client.get_cog('UICog')
+                    if cog:
+                        try:
+                            await cog.process_delete_routine(itx, rid_inner)
+                        except Exception as e:
+                            print('process_delete_routine 에러:', e)
+                            await itx.followup.send('루틴 삭제 중 오류가 발생했습니다.', ephemeral=True)
+                    else:
+                        await itx.followup.send('UICog를 찾을 수 없습니다.', ephemeral=True)
+                return cb
+            btn_del.callback = make_del_cb(rid)
+            self.add_item(btn_del)
+
+        # 하단에 새 루틴 추가 버튼
+        btn_add = discord.ui.Button(label="루틴 추가", style=discord.ButtonStyle.success, custom_id="ui:add_routine")
+        async def add_cb(itx: discord.Interaction):
+            print('RoutineManagerView: 루틴 추가 클릭 by', itx.user)
+            await itx.response.send_modal(AddRoutineModal())
+        btn_add.callback = add_cb
+        self.add_item(btn_add)
+
+
+class GoalManagerView(discord.ui.View):
+    def __init__(self, goals: list, timeout: Optional[float] = None):
+        """목표 목록을 받아 각 항목에 대해 편집/삭제 버튼을 제공하고, 하단에 '목표 추가' 버튼을 둡니다."""
+        super().__init__(timeout=timeout)
+        self.goals = goals
+
+        for g in goals:
+            gid = g.get('id')
+            title_label = g.get('title') or '무명 목표'
+
+            btn_edit = discord.ui.Button(label=f"✏️ {title_label}", style=discord.ButtonStyle.secondary, custom_id=f"gm:edit:{gid}")
+            def make_edit_cb(gid_inner: int):
+                async def cb(itx: discord.Interaction):
+                    print(f"GoalManagerView: edit 클릭 gid={gid_inner} by", itx.user)
+                    await itx.response.defer(ephemeral=True)
+                    cog = itx.client.get_cog('UICog')
+                    if cog:
+                        try:
+                            await cog.open_edit_goal_modal(itx, gid_inner)
+                        except Exception as e:
+                            print('open_edit_goal_modal 에러:', e)
+                            await itx.followup.send('목표 편집 열기 중 오류가 발생했습니다.', ephemeral=True)
+                    else:
+                        await itx.followup.send('UICog를 찾을 수 없습니다.', ephemeral=True)
+                return cb
+            btn_edit.callback = make_edit_cb(gid)
+            self.add_item(btn_edit)
+
+            btn_del = discord.ui.Button(label=f"🗑️ 삭제", style=discord.ButtonStyle.danger, custom_id=f"gm:delete:{gid}")
+            def make_del_cb(gid_inner: int):
+                async def cb(itx: discord.Interaction):
+                    print(f"GoalManagerView: delete 클릭 gid={gid_inner} by", itx.user)
+                    await itx.response.defer(ephemeral=True)
+                    cog = itx.client.get_cog('UICog')
+                    if cog:
+                        try:
+                            await cog.process_delete_goal(itx, gid_inner)
+                        except Exception as e:
+                            print('process_delete_goal 에러:', e)
+                            await itx.followup.send('목표 삭제 중 오류가 발생했습니다.', ephemeral=True)
+                    else:
+                        await itx.followup.send('UICog를 찾을 수 없습니다.', ephemeral=True)
+                return cb
+            btn_del.callback = make_del_cb(gid)
+            self.add_item(btn_del)
+
+        btn_add = discord.ui.Button(label="목표 추가", style=discord.ButtonStyle.success, custom_id="ui:add_goal")
+        async def add_goal_cb(itx: discord.Interaction):
+            print('GoalManagerView: 목표 추가 클릭 by', itx.user)
+            await itx.response.send_modal(AddGoalModal())
+        btn_add.callback = add_goal_cb
+        self.add_item(btn_add)
+
