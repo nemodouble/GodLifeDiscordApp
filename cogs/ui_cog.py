@@ -182,7 +182,7 @@ class UICog(commands.Cog):
         print("process_settings 호출 by", itx.user, data)
         # 저장: user_settings에 reminder_time을 upsert
         try:
-            reminder_time = data.get('reminder_time') or "08:00"
+            reminder_time = data.get('reminder_time') or "23:00"
             await user_settings_repo.upsert_user_settings(str(itx.user.id), reminder_time=reminder_time)
         except Exception as e:
             print("user_settings upsert 에러:", e)

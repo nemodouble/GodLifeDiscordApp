@@ -6,7 +6,7 @@ from typing import Optional
 from db.db import connect_db
 
 
-async def upsert_user_settings(user_id: str, tz: str = "Asia/Seoul", reminder_time: str = "08:00") -> None:
+async def upsert_user_settings(user_id: str, tz: str = "Asia/Seoul", reminder_time: str = "23:00") -> None:
     """user_settings 테이블에 upsert(기본값 포함).
 
     - 새 레코드가 없으면 INSERT
@@ -41,4 +41,3 @@ async def get_user_settings(user_id: str) -> Optional[dict]:
         return dict(row)
     finally:
         await conn.close()
-

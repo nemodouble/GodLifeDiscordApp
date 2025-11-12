@@ -24,7 +24,7 @@ PRAGMA foreign_keys = ON;
 CREATE TABLE IF NOT EXISTS user_settings (
   user_id TEXT PRIMARY KEY,
   tz TEXT NOT NULL DEFAULT 'Asia/Seoul',
-  reminder_time TEXT NOT NULL DEFAULT '08:00',
+  reminder_time TEXT NOT NULL DEFAULT '23:00',
   created_at TEXT NOT NULL
 );
 

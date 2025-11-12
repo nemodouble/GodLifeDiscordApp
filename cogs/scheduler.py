@@ -70,7 +70,7 @@ class SchedulerCog(commands.Cog):
                     cur = await conn.execute("SELECT DISTINCT user_id FROM routine")
                     rows = await cur.fetchall()
                     await cur.close()
-                    users = [(r[0], 'Asia/Seoul', '08:00') for r in rows]
+                    users = [(r[0], 'Asia/Seoul', '23:00') for r in rows]
             finally:
                 await conn.close()
 
@@ -79,7 +79,7 @@ class SchedulerCog(commands.Cog):
             for u in users:
                 user_id = str(u[0])
                 tz_name = u[1] or "Asia/Seoul"
-                reminder_time = u[2] or "08:00"
+                reminder_time = u[2] or "23:00"
                 # daily prompt
                 when_dt = self._make_when_dt_for_date(now, tz_name, reminder_time)
                 print(f"Scheduler: user={user_id} tz={tz_name} reminder_time={reminder_time} -> when_dt={when_dt.isoformat()}")
@@ -158,13 +158,13 @@ class SchedulerCog(commands.Cog):
             except Exception as e:
                 print("daily_prompt: is_valid_day error:", e)
                 continue
-        if len(valid) == 0:
-            # 보낼 필요 없음
-            self.sent_keys.add(key)
+        # Compose message listing incomplete routines (or an all-done message)
+        try:
+            content = await self._compose_reminder_message(user_id, ld, valid)
+            await self._safe_send_dm(user_id, content)
+        except Exception as e:
+            print("daily_prompt: message compose/send error:", e)
             return
-        # DM 전송
-        content = f"오늘의 루틴 안내 ({ld.isoformat()})\n" + "\n".join([f"[{r['id']}] {r['name']}" for r in valid])
-        await self._safe_send_dm(user_id, content)
         self.sent_keys.add(key)
 
     async def _deadline_task(self, user_id: str, routine_id: int, when_dt: datetime) -> None:
@@ -201,85 +201,54 @@ class SchedulerCog(commands.Cog):
         if ci and (ci.get("checked_at") or ci.get("skipped")):
             self.sent_keys.add(key)
             return
-        # 미완료: DM 보내기
-        content = f"루틴 미완료 알림: [{routine_id}] {routine.get('name')}\n날짜: {ld.isoformat()}"
-        await self._safe_send_dm(user_id, content)
+        # 미완료: DM 보내기 (전체 미완성 목록으로 구성)
+        try:
+            # reuse compose logic to list incomplete routines for the day
+            routines = await routine_repo.prepare_checkin_for_date(user_id, now_kst())
+            valid = []
+            for r in routines:
+                try:
+                    if await is_valid_day(user_id, r.get("weekend_mode", "weekday"), ld):
+                        valid.append(r)
+                except Exception:
+                    continue
+            content = await self._compose_reminder_message(user_id, ld, valid)
+            await self._safe_send_dm(user_id, content)
+        except Exception as e:
+            print("deadline_task: compose/send error:", e)
+            return
         self.sent_keys.add(key)
 
-    async def _safe_send_dm(self, user_id: str, content: str) -> None:
-        try:
-            # ensure bot ready before attempting fetch/send
-            if not getattr(self.bot, 'is_ready', lambda: False)():
-                try:
-                    await self.bot.wait_until_ready()
-                except Exception:
-                    pass
-            print(f"_safe_send_dm: fetching user {user_id} to send DM len={len(content)}")
-            user = await self.bot.fetch_user(int(user_id))
-            print(f"_safe_send_dm: fetched user {user}; sending message")
-            await user.send(content)
-            print(f"_safe_send_dm: DM sent to {user_id}")
-        except Exception as e:
-            print("_safe_send_dm error:", e)
+    async def _compose_reminder_message(self, user_id: str, ld_date, routines_list: list) -> str:
+        """주어진 날짜(ld_date)와 적용 루틴 목록(routines_list)에서 미완료 루틴을 찾아 메시지를 반환합니다.
 
-    async def _correction_loop(self) -> None:
-        """5분마다 지나간 트리거를 확인해 즉시 처리한다."""
-        try:
-            while True:
-                try:
-                    await self._run_correction_once()
-                except Exception as e:
-                    print("correction loop error:", e)
-                await asyncio.sleep(300)  # 5분
-        except asyncio.CancelledError:
-            return
+        routines_list: list of routine dicts (may be empty)
+        """
+        # ld_date는 date 객체
+        date_str = ld_date.isoformat() if hasattr(ld_date, 'isoformat') else str(ld_date)
 
-    async def _run_correction_once(self) -> None:
-        now = now_kst()
-        window_start = now - timedelta(minutes=5)
-        # 스캔: 모든 사용자, 각 사용자에 대해 daily + routines의 deadline 계산
-        conn = await connect_db()
-        try:
-            cur = await conn.execute("SELECT user_id, tz, reminder_time FROM user_settings")
-            users = await cur.fetchall()
-            await cur.close()
+        # determine particle based on last digit rule: 1,3,6,7,8,0 -> '은', others -> '는'
+        last_char = date_str[-1] if date_str else ''
+        particle = '은' if last_char in {'1','3','6','7','8','0'} else '는'
 
-            # fallback: user_settings 비어있을 경우 routine의 distinct user_id를 사용
-            if not users:
-                cur = await conn.execute("SELECT DISTINCT user_id FROM routine")
-                rows = await cur.fetchall()
-                await cur.close()
-                users = [(r[0], 'Asia/Seoul', '08:00') for r in rows]
-        finally:
-            await conn.close()
+        # If no routines apply at all, treat as all done
+        if not routines_list:
+            return f"{date_str}{particle} 모든 루틴을 달성하셨어요! 잘하셨습니다!"
 
-        for u in users:
-            user_id = str(u[0])
-            tz_name = u[1] or "Asia/Seoul"
-            reminder_time = u[2] or "08:00"
-            # daily
-            when_daily = self._make_when_dt_for_date(now, tz_name, reminder_time)
-            if window_start <= when_daily <= now:
-                # 실행
-                ld = local_day(now)
-                key = (user_id, ld.isoformat(), "daily_prompt", None)
-                if key not in self.sent_keys:
-                    await self._daily_prompt_task(user_id, when_daily)
-            # routines
+        incomplete_names = []
+        for r in routines_list:
             try:
-                routines = await routine_repo.list_active_routines_for_user(user_id)
+                ci = await checkin_repo.get_checkin(r['id'], ld_date)
+                # If no record or not checked and not skipped -> incomplete
+                if not ci or (not ci.get('checked_at') and not ci.get('skipped')):
+                    incomplete_names.append(r.get('name') or f"루틴{r.get('id')}")
             except Exception as e:
-                print("correction: routine list error:", e)
-                routines = []
-            for r in routines:
-                dt_str = r.get("deadline_time") or reminder_time
-                when_r = self._make_when_dt_for_date(now, tz_name, dt_str)
-                if window_start <= when_r <= now:
-                    ld = local_day(now)
-                    key = (user_id, ld.isoformat(), "deadline_reminder", r["id"])
-                    if key not in self.sent_keys:
-                        await self._deadline_task(user_id, r["id"], when_r)
+                print("_compose_reminder_message: checkin lookup error:", e)
+                # On error, assume incomplete to be safe
+                incomplete_names.append(r.get('name') or f"루틴{r.get('id')}")
+        if not incomplete_names:
+            return f"{date_str}{particle} 모든 루틴을 달성하셨어요! 잘하셨습니다!"
 
-
-async def setup(bot: commands.Bot):
-    await bot.add_cog(SchedulerCog(bot))
+        # Build Korean list with commas
+        joined = ", ".join(incomplete_names)
+        return f"{date_str}{particle} {joined}를 미달성하셨어요! 혹시 체크를 잊으셨다면 지금 해보시는게 어떨까요?"
