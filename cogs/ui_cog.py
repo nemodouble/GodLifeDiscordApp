@@ -1,4 +1,5 @@
-﻿import discord
+﻿import asyncio
+import discord
 from discord import app_commands
 from discord.ext import commands
 
@@ -6,6 +7,7 @@ from ui.views import MainPanelView, RoutineManagerView, GoalManagerView
 from ui.modals import EditRoutineModal, EditGoalModal
 from repos import routine_repo
 from repos import goal_repo
+from repos import user_settings_repo
 
 
 class UICog(commands.Cog):
@@ -178,8 +180,40 @@ class UICog(commands.Cog):
 
     async def process_settings(self, itx: discord.Interaction, data: dict):
         print("process_settings 호출 by", itx.user, data)
-        # 향후 user_settings_repo 등을 통해 저장할 수 있습니다. 현재는 응답만 보냄.
-        await itx.followup.send("설정이 저장되었습니다 (테스트).", ephemeral=True)
+        # 저장: user_settings에 reminder_time을 upsert
+        try:
+            reminder_time = data.get('reminder_time') or "08:00"
+            await user_settings_repo.upsert_user_settings(str(itx.user.id), reminder_time=reminder_time)
+        except Exception as e:
+            print("user_settings upsert 에러:", e)
+            await itx.followup.send("설정 저장 중 오류가 발생했습니다.", ephemeral=True)
+            return
+
+        # 스케줄러가 즉시 반영하도록 트리거
+        try:
+            scheduler = itx.client.get_cog('SchedulerCog')
+            if scheduler and hasattr(scheduler, '_run_correction_once'):
+                # 비동기로 즉시 검사 실행
+                asyncio.create_task(scheduler._run_correction_once())
+        except Exception as e:
+            print("scheduler trigger 에러:", e)
+
+        await itx.followup.send("설정이 저장되었습니다.", ephemeral=True)
+
+    @app_commands.command(name="debug_reminder", description="(디버그) 특정 사용자에게 테스트 리마인더 DM 전송")
+    async def debug_reminder(self, interaction: discord.Interaction, user_id: str):
+        print("/debug_reminder 호출 by", interaction.user, "target=", user_id)
+        await interaction.response.defer(ephemeral=True)
+        scheduler = interaction.client.get_cog('SchedulerCog')
+        if not scheduler:
+            await interaction.followup.send("SchedulerCog를 찾을 수 없습니다.", ephemeral=True)
+            return
+        try:
+            await scheduler._safe_send_dm(user_id, f"테스트 리마인더: {interaction.user}에서 보냄")
+            await interaction.followup.send("테스트 리마인더 전송 시도됨.", ephemeral=True)
+        except Exception as e:
+            print("debug_reminder error:", e)
+            await interaction.followup.send(f"전송 도중 오류: {e}", ephemeral=True)
 
 
 async def setup(bot: commands.Bot):

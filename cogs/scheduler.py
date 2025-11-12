@@ -1,5 +1,4 @@
 ﻿# New scheduler cog implementing daily prompts and deadline reminders (MVP)
-# ...existing code...
 from __future__ import annotations
 
 import asyncio
@@ -47,6 +46,17 @@ class SchedulerCog(commands.Cog):
     async def schedule_today(self) -> None:
         """오늘의 모든 사용자를 스캔해 트리거를 예약하고 보정 루프를 시작."""
         try:
+            print("Scheduler: schedule_today 시작")
+            # 봇이 ready 상태가 될 때까지 기다립니다. (연결 전 DM 전송 등 실패 방지)
+            if not getattr(self.bot, 'is_ready', lambda: False)():
+                try:
+                    print("Scheduler: waiting until bot ready...")
+                    await self.bot.wait_until_ready()
+                    print("Scheduler: bot ready")
+                except Exception:
+                    # wait_until_ready may raise if bot is closed; ignore and continue
+                    pass
+
             now = now_kst()
             # 스케줄링 대상 사용자 목록 조회
             conn = await connect_db()
@@ -54,8 +64,17 @@ class SchedulerCog(commands.Cog):
                 cur = await conn.execute("SELECT user_id, tz, reminder_time FROM user_settings")
                 users = await cur.fetchall()
                 await cur.close()
+
+                # fallback: user_settings가 비어있으면 routine 테이블에서 사용자 목록을 추출
+                if not users:
+                    cur = await conn.execute("SELECT DISTINCT user_id FROM routine")
+                    rows = await cur.fetchall()
+                    await cur.close()
+                    users = [(r[0], 'Asia/Seoul', '08:00') for r in rows]
             finally:
                 await conn.close()
+
+            print(f"Scheduler: found {len(users) if users else 0} users for scheduling")
 
             for u in users:
                 user_id = str(u[0])
@@ -63,8 +82,12 @@ class SchedulerCog(commands.Cog):
                 reminder_time = u[2] or "08:00"
                 # daily prompt
                 when_dt = self._make_when_dt_for_date(now, tz_name, reminder_time)
+                print(f"Scheduler: user={user_id} tz={tz_name} reminder_time={reminder_time} -> when_dt={when_dt.isoformat()}")
                 if when_dt > now:
                     asyncio.create_task(self._daily_prompt_task(user_id, when_dt))
+                    print(f"Scheduler: scheduled daily_prompt for user={user_id} at {when_dt.isoformat()}")
+                else:
+                    print(f"Scheduler: skipping daily_prompt (time already passed) for user={user_id} at {when_dt.isoformat()}")
                 # deadline reminders: 모든 활성 루틴 조회
                 try:
                     routines = await routine_repo.list_active_routines_for_user(user_id)
@@ -78,6 +101,9 @@ class SchedulerCog(commands.Cog):
                     when_dt_r = self._make_when_dt_for_date(now, tz_name, dt_str)
                     if when_dt_r > now:
                         asyncio.create_task(self._deadline_task(user_id, r["id"], when_dt_r))
+                        print(f"Scheduler: scheduled deadline_reminder for user={user_id} routine={r['id']} at {when_dt_r.isoformat()}")
+                    else:
+                        print(f"Scheduler: skipping deadline_reminder (time passed) for user={user_id} routine={r['id']} at {when_dt_r.isoformat()}")
 
             # correction loop 시작
             self._correction_task = asyncio.create_task(self._correction_loop())
@@ -182,8 +208,17 @@ class SchedulerCog(commands.Cog):
 
     async def _safe_send_dm(self, user_id: str, content: str) -> None:
         try:
+            # ensure bot ready before attempting fetch/send
+            if not getattr(self.bot, 'is_ready', lambda: False)():
+                try:
+                    await self.bot.wait_until_ready()
+                except Exception:
+                    pass
+            print(f"_safe_send_dm: fetching user {user_id} to send DM len={len(content)}")
             user = await self.bot.fetch_user(int(user_id))
+            print(f"_safe_send_dm: fetched user {user}; sending message")
             await user.send(content)
+            print(f"_safe_send_dm: DM sent to {user_id}")
         except Exception as e:
             print("_safe_send_dm error:", e)
 
@@ -208,6 +243,13 @@ class SchedulerCog(commands.Cog):
             cur = await conn.execute("SELECT user_id, tz, reminder_time FROM user_settings")
             users = await cur.fetchall()
             await cur.close()
+
+            # fallback: user_settings 비어있을 경우 routine의 distinct user_id를 사용
+            if not users:
+                cur = await conn.execute("SELECT DISTINCT user_id FROM routine")
+                rows = await cur.fetchall()
+                await cur.close()
+                users = [(r[0], 'Asia/Seoul', '08:00') for r in rows]
         finally:
             await conn.close()
 
@@ -241,4 +283,3 @@ class SchedulerCog(commands.Cog):
 
 async def setup(bot: commands.Bot):
     await bot.add_cog(SchedulerCog(bot))
-
