@@ -99,3 +99,19 @@ async def list_checkins_for_user_day(user_id: str, local_day: Union[date, str]) 
     finally:
         await conn.close()
 
+
+async def clear_checkin(routine_id: int, local_day: Union[date, str]) -> None:
+    """체크인 상태를 초기화(미달성 상태로 설정).
+
+    기존 레코드가 있으면 checked_at, undone_at, skipped, skip_reason을 NULL/0으로 갱신합니다.
+    """
+    ld = _iso_date(local_day)
+    conn = await connect_db()
+    try:
+        await conn.execute(
+            "UPDATE routine_checkin SET checked_at = NULL, undone_at = NULL, skipped = 0, skip_reason = NULL WHERE routine_id = ? AND local_day = ?",
+            (routine_id, ld),
+        )
+        await conn.commit()
+    finally:
+        await conn.close()

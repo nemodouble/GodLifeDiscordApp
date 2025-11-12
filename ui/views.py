@@ -46,61 +46,61 @@ class MainPanelView(discord.ui.View):
 
 
 class RoutineActionView(discord.ui.View):
-    def __init__(self, routine_id: int, yyyymmdd: str, timeout: Optional[float] = None):
+    def __init__(self, routine_id: int, yyyymmdd: str, label: str = None, timeout: Optional[float] = None):
         super().__init__(timeout=timeout)
         self.rid = routine_id
         self.day = yyyymmdd
+        # primary toggle button: 상태 순환 (미달성 -> 완료 -> 스킵 -> 미달성)
+        btn_label = label or "상태 변경"
+        btn = discord.ui.Button(label=btn_label, style=discord.ButtonStyle.primary, custom_id=f"rt:toggle:{self.rid}:{self.day}")
 
-        # 동적 버튼 생성 (custom_id 규칙: rt:done|undo|skip:<rid>:<yyyymmdd>)
-        btn_done = discord.ui.Button(label="✅ 완료", style=discord.ButtonStyle.success, custom_id=f"rt:done:{self.rid}:{self.day}")
-        btn_undo = discord.ui.Button(label="↩ 되돌리기", style=discord.ButtonStyle.secondary, custom_id=f"rt:undo:{self.rid}:{self.day}")
-        btn_skip = discord.ui.Button(label="🛌 스킵", style=discord.ButtonStyle.danger, custom_id=f"rt:skip:{self.rid}:{self.day}")
-
-        async def done_cb(itx: discord.Interaction):
-            print(f"RoutineActionView: done 클릭 rid={self.rid} day={self.day} by", itx.user)
+        async def toggle_cb(itx: discord.Interaction):
+            print(f"RoutineActionView: toggle 클릭 rid={self.rid} day={self.day} by", itx.user)
             cog = itx.client.get_cog("RoutineCog")
             if cog:
                 try:
-                    await cog.handle_button(itx, "done", self.rid, self.day)
+                    await cog.handle_toggle_button(itx, self.rid, self.day)
                 except Exception as e:
-                    print("handle_button(done) 에러:", e)
-                    await itx.response.send_message("완료 처리 중 오류가 발생했습니다.", ephemeral=True)
+                    print("handle_toggle_button 에러:", e)
+                    await itx.response.send_message("상태 변경 중 오류가 발생했습니다.", ephemeral=True)
             else:
                 await itx.response.send_message("RoutineCog를 찾을 수 없습니다.", ephemeral=True)
 
-        async def undo_cb(itx: discord.Interaction):
-            print(f"RoutineActionView: undo 클릭 rid={self.rid} day={self.day} by", itx.user)
-            cog = itx.client.get_cog("RoutineCog")
-            if cog:
-                try:
-                    await cog.handle_button(itx, "undo", self.rid, self.day)
-                except Exception as e:
-                    print("handle_button(undo) 에러:", e)
-                    await itx.response.send_message("되돌리기 처리 중 오류가 발생했습니다.", ephemeral=True)
-            else:
-                await itx.response.send_message("RoutineCog를 찾을 수 없습니다.", ephemeral=True)
+        btn.callback = toggle_cb
+        self.add_item(btn)
 
-        async def skip_cb(itx: discord.Interaction):
-            print(f"RoutineActionView: skip 클릭 rid={self.rid} day={self.day} by", itx.user)
-            # RoutineCog가 모달 제출 후 원본 메시지를 갱신할 수 있도록 컨텍스트를 기록
-            cog = itx.client.get_cog("RoutineCog")
-            if cog:
-                try:
-                    # message/channel 정보를 기록
-                    if itx.message is not None and itx.channel is not None:
-                        await cog.record_pending_skip(itx.channel.id, itx.message.id, self.rid, self.day, itx.user.id)
-                except Exception as e:
-                    print("record_pending_skip 에러:", e)
-            # 스킵 사유 모달을 띄움(모달에 루틴/일자 정보를 전달)
-            await itx.response.send_modal(SkipReasonModal(self.day))
 
-        btn_done.callback = done_cb
-        btn_undo.callback = undo_cb
-        btn_skip.callback = skip_cb
+class TodayCheckinView(discord.ui.View):
+    def __init__(self, routines: list, yyyymmdd: str, timeout: Optional[float] = None):
+        """하나의 메시지에 루틴별 토글 버튼을 모두 추가합니다.
 
-        self.add_item(btn_done)
-        self.add_item(btn_undo)
-        self.add_item(btn_skip)
+        routines: list of dict with keys: id, name
+        """
+        # Force no timeout so buttons remain active until programmatic update
+        super().__init__(timeout=None)
+        self.day = yyyymmdd
+        # Discord 버튼은 한 행에 최대 5개, 뷰 전체 최대 25개 제한이 있으므로 그 범위 내에서 추가
+        for r in routines:
+            label = f"{r.get('name')}"
+            # custom_id: tc:<rid>:<yyyymmdd>
+            btn = discord.ui.Button(label=label, style=discord.ButtonStyle.secondary, custom_id=f"tc:{r['id']}:{self.day}")
+
+            def make_cb(rid: int):
+                async def cb(itx: discord.Interaction):
+                    print(f"TodayCheckinView: btn clicked rid={rid} day={self.day} by", itx.user)
+                    cog = itx.client.get_cog("RoutineCog")
+                    if cog:
+                        try:
+                            await cog.handle_toggle_button(itx, rid, self.day)
+                        except Exception as e:
+                            print("handle_toggle_button 에러:", e)
+                            await itx.response.send_message("상태 변경 중 오류가 발생했습니다.", ephemeral=True)
+                    else:
+                        await itx.response.send_message("RoutineCog를 찾을 수 없습니다.", ephemeral=True)
+                return cb
+
+            btn.callback = make_cb(r['id'])
+            self.add_item(btn)
 
 
 class ReportScopeView(discord.ui.View):

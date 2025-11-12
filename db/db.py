@@ -5,7 +5,17 @@ from dotenv import load_dotenv
 import aiosqlite
 
 load_dotenv()
-DB_PATH = os.getenv('DATABASE_PATH', './data/database.db')
+_raw_db = os.getenv('DATABASE_PATH', './data/database.db')
+
+# Ensure DATABASE_PATH is resolved relative to the project root (repo top-level)
+# This prevents different callers (with different CWDs) from creating DB files
+# in different locations. db.py is located at <project_root>/db/db.py, so
+# project_root = parent of the db/ directory.
+_project_root = Path(__file__).resolve().parents[1]
+if Path(_raw_db).is_absolute():
+    DB_PATH = str(Path(_raw_db))
+else:
+    DB_PATH = str((_project_root / _raw_db).resolve())
 
 # SQL 스키마 (CREATE TABLE IF NOT EXISTS)
 _SCHEMA_SQL = r"""
@@ -114,4 +124,3 @@ if __name__ == '__main__':
     # 간단한 실행: init DB
     asyncio.run(init_db())
     print(f'Initialized database at: {DB_PATH}')
-

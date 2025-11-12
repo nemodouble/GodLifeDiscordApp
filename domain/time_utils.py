@@ -117,19 +117,13 @@ async def is_valid_day(user_id: str, weekend_mode: str, d: Union[date, datetime]
     if await is_exempt(user_id, d):
         return False
     # 주말 모드 검사
-    if not is_applicable_day(weekend_mode, d):
+    try:
+        if not is_applicable_day(weekend_mode, d):
+            return False
+    except Exception:
+        # 잘못된 weekend_mode가 들어오면 안전하게 False 반환
         return False
-    # 공휴일 검사
+    # 한국 공휴일이면 유효하지 않음
     if is_korean_holiday(d):
         return False
     return True
-
-
-# 간단한 스모크 테스트: 03:59 -> 04:00 경계 확인
-if __name__ == "__main__":
-    dt1 = datetime(2025, 11, 11, 3, 59, tzinfo=KST)
-    dt2 = datetime(2025, 11, 11, 4, 0, tzinfo=KST)
-    print("now_kst() =", now_kst())
-    print("local_day(2025-11-11 03:59) =", local_day(dt1))
-    print("local_day(2025-11-11 04:00) =", local_day(dt2))
-    # 기대: dt1은 하루 전일(2025-11-10)로, dt2는 2025-11-11로 구분됨

@@ -1,10 +1,11 @@
 ﻿import discord
 from discord.ext import commands
 from typing import Dict, Tuple, Any
+from datetime import date
 
 from repos import routine_repo, checkin_repo
 from domain.time_utils import now_kst, local_day, is_valid_day
-from ui.views import RoutineActionView
+from ui.views import TodayCheckinView
 
 
 class RoutineCog(commands.Cog):
@@ -19,6 +20,23 @@ class RoutineCog(commands.Cog):
         self.bot = bot
         # key: (user_id, yyyymmdd) -> info dict
         self.pending_skips: Dict[Tuple[str, str], Dict[str, Any]] = {}
+        # key: (user_id, yyyymmdd) -> (channel_id, message_id) for last sent checkin message (DM preferred)
+        self.last_checkin_message: Dict[Tuple[str, str], Dict[str, int]] = {}
+
+    # 날짜를 "YY-MM-DD" 형태로 포맷해서 반환합니다. (메시지에 표시할 용도)
+    def _format_display_date(self, ld) -> str:
+        try:
+            # ld가 date 객체면 strftime, 아니면 iso string로 시도
+            if hasattr(ld, 'strftime'):
+                return ld.strftime("%y-%m-%d")
+            # ld가 문자열(ISO)인 경우
+            try:
+                d = date.fromisoformat(str(ld))
+                return d.strftime("%y-%m-%d")
+            except Exception:
+                return str(ld)
+        except Exception:
+            return str(ld)
 
     async def record_pending_skip(self, channel_id: int, message_id: int, rid: int, yyyymmdd: str, user_id: int):
         key = (str(user_id), str(yyyymmdd))
@@ -67,60 +85,184 @@ class RoutineCog(commands.Cog):
             await itx.followup.send("루틴 목록을 불러오는 중 오류가 발생했습니다.", ephemeral=True)
             return
 
-        sent = 0
+        # 필터링 + 상태 수집
+        display = []
         for r in routines:
             try:
                 if await is_valid_day(user_id, r.get("weekend_mode", "weekday"), ld):
-                    content = f"[{r['id']}] {r['name']}"
-                    view = RoutineActionView(r['id'], ld.isoformat())
-                    await itx.followup.send(content, view=view, ephemeral=True)
-                    sent += 1
+                    # 현재 상태 조회
+                    try:
+                        ci = await checkin_repo.get_checkin(r["id"], ld.isoformat())
+                    except Exception:
+                        ci = None
+                    # 이모지 매핑: 미완료 -> ❌, 완료 -> ✅, 스킵 -> ➡️
+                    if ci and ci.get("skipped"):
+                        emoji = "➡️"
+                    elif ci and ci.get("checked_at"):
+                        emoji = "✅"
+                    else:
+                        emoji = "❌"
+                    display.append({"id": r["id"], "name": f"{emoji} {r['name']}"})
             except Exception as e:
                 print("is_valid_day 체크 중 오류:", e)
-                # 건너뜀
                 continue
 
-        if sent == 0:
+        if not display:
             await itx.followup.send("오늘 체크인 대상 루틴이 없습니다.", ephemeral=True)
+            return
 
-    async def handle_button(self, itx: discord.Interaction, action: str, rid: int, yyyymmdd: str):
-        # 버튼 콜백에서 호출됨. 이미 interaction이 있으므로 응답 후 DB 갱신 및 메시지 편집
-        await itx.response.defer(ephemeral=True)
-        user_id = str(itx.user.id)
+        # 하나의 메시지에 여러 버튼으로 전송(비-에페메럴로 전송)
+        view = TodayCheckinView(display, ld.isoformat())
+        # register view so callbacks remain active while bot is running
         try:
-            if action == "done":
-                await checkin_repo.upsert_checkin_done(rid, user_id, yyyymmdd)
-            elif action == "undo":
-                await checkin_repo.undo_checkin(rid, yyyymmdd)
-            else:
-                await itx.followup.send("알 수 없는 액션입니다.", ephemeral=True)
+            self.bot.add_view(view)
+        except Exception as e:
+            print("bot.add_view 등록 실패:", type(e).__name__, e)
+        print(f"open_today_checkin_list: prepared display_count={len(display)} view_children={len(view.children)}")
+
+        # 메시지 내용에 날짜 추가 (YY-MM-DD 형식)
+        msg_content = f"{self._format_display_date(ld)} 일일 루틴 진행 상태입니다!"
+
+        # 우선 현재 채널에서 일반 메시지로 전송 시도
+        try:
+            channel = itx.channel
+            if channel is not None:
+                msg = await channel.send(content=msg_content, view=view)
+                self.last_checkin_message[(user_id, ld.isoformat())] = {"channel_id": msg.channel.id, "message_id": msg.id}
                 return
         except Exception as e:
-            print("handle_button DB 에러:", e)
+            print("채널 전송 실패, DM 시도 또는 fallback 처리합니다:", e)
+
+        # 채널 전송 실패 시 DM 시도
+        try:
+            dm = await itx.user.send(content=msg_content, view=view)
+            self.last_checkin_message[(user_id, ld.isoformat())] = {"channel_id": dm.channel.id, "message_id": dm.id}
+            return
+        except Exception as e:
+            print("DM 전송 실패, ephemeral로 전송합니다:", e)
+
+        # 모든 시도 실패 시 ephemeral(사용자에게만 보이는)으로 알림
+        try:
+            await itx.followup.send(msg_content, view=view, ephemeral=True)
+        except Exception as e:
+            print("ephemeral 전송 실패:", e)
+
+    async def handle_toggle_button(self, itx: discord.Interaction, rid: int, yyyymmdd: str):
+        # 상태 순환: 미완료 -> 완료 -> 스킵 -> 미달성
+        #        await itx.response.defer(ephemeral=True)
+        # 상태 변경시 최종 ephemeral 응답 전송 기능 제거: defer는 기본(비-ephemeral)로 수행
+        await itx.response.defer()
+        user_id = str(itx.user.id)
+
+        try:
+            ci = await checkin_repo.get_checkin(rid, yyyymmdd)
+        except Exception as e:
+            print("get_checkin 에러:", e)
+            await itx.followup.send("상태 조회 중 오류가 발생했습니다.", ephemeral=True)
+            return
+
+        try:
+            if not ci or (not ci.get("checked_at") and not ci.get("skipped")):
+                # 미완료 -> 완료
+                await checkin_repo.upsert_checkin_done(rid, user_id, yyyymmdd)
+                new_status = "완료"
+            elif ci.get("checked_at"):
+                # 완료 -> 스킵
+                await checkin_repo.skip_checkin(rid, user_id, yyyymmdd, reason="(사용자 버튼 스킵)")
+                new_status = "스킵"
+            elif ci.get("skipped"):
+                # 스킵 -> 미완료
+                await checkin_repo.clear_checkin(rid, yyyymmdd)
+                new_status = "미완료"
+            else:
+                await checkin_repo.clear_checkin(rid, yyyymmdd)
+                new_status = "미완료"
+        except Exception as e:
+            print("handle_toggle_button DB 에러:", e)
             await itx.followup.send("DB 처리 중 오류가 발생했습니다.", ephemeral=True)
             return
 
-        # DB 조회로 상태 결정
+        # 가능한 경우 원본 메시지(특히 동일 채널 메시지 또는 DM)에 대해 edit 우선, 실패 시 delete+resend
+        key = (user_id, yyyymmdd)
         try:
-            ci = await checkin_repo.get_checkin(rid, yyyymmdd)
-            if ci:
-                if ci.get("skipped"):
-                    status = f"스킵 (사유: {ci.get('skip_reason')})"
-                elif ci.get("checked_at"):
-                    status = "완료"
-                elif ci.get("undone_at"):
-                    status = "되돌림"
+            # 재구성: user_id와 날짜를 사용해 다시 준비된 루틴 및 상태를 가져와 view 생성
+            now = now_kst()
+            routines = await routine_repo.prepare_checkin_for_date(user_id, now)
+            # yyyymmdd may be a string like 'YYYY-MM-DD' -> convert to date for is_valid_day
+            try:
+                ld_date = date.fromisoformat(str(yyyymmdd))
+            except Exception:
+                # fallback if already a date
+                ld_date = yyyymmdd
+            ld = ld_date
+            display = []
+            for r in routines:
+                try:
+                    if await is_valid_day(user_id, r.get("weekend_mode", "weekday"), ld):
+                        # get_checkin accepts date or iso string
+                        ci2 = await checkin_repo.get_checkin(r["id"], ld)
+                        # 이모지 매핑: 미완료 -> ❌, 완료 -> ✅, 스킵 -> ➡️
+                        if ci2 and ci2.get("skipped"):
+                            emoji = "➡️"
+                        elif ci2 and ci2.get("checked_at"):
+                            emoji = "✅"
+                        else:
+                            emoji = "❌"
+                        display.append({"id": r["id"], "name": f"{emoji} {r['name']}"})
+                except Exception:
+                    continue
+
+            # If display is empty after rebuild, skip editing the original message to avoid removing buttons.
+            if not display:
+                print(f"handle_toggle_button: rebuilt display is empty, skipping message edit (key={key})")
+                # 상태 변경시 최종 ephemeral 응답 전송 기능을 제거함 -> 로그만 남김
+                return
+
+            new_view = TodayCheckinView(display, ld.isoformat() if hasattr(ld, 'isoformat') else str(ld))
+            # register new view so callbacks remain active
+            try:
+                self.bot.add_view(new_view)
+            except Exception as e:
+                print("bot.add_view 등록 실패(갱신 뷰):", type(e).__name__, e)
+            print(f"handle_toggle_button: rebuilt display_count={len(display)} new_view_children={len(new_view.children)} key={key}")
+
+            info = self.last_checkin_message.get(key)
+            if info:
+                # 기존 메시지(채널+메시지 ID)가 기록되어 있는 경우 우선 원본 메시지를 찾아 재전송을 시도합니다.
+                try:
+                    ch = await self.bot.fetch_channel(info["channel_id"])
+                    msg = await ch.fetch_message(info["message_id"])
+                except Exception as e:
+                    # 기존 메시지 조회에 실패하면 ephemeral로 결과를 전송합니다.
+                    print("기존 메시지 조회 실패:", type(e).__name__, e)
+                    try:
+                        await itx.followup.send(f"{self._format_display_date(ld)} 일일 루틴 진행 상태입니다!", view=new_view, ephemeral=True)
+                    except Exception as e:
+                        print("ephemeral 재전송 실패:", type(e).__name__, e)
                 else:
-                    status = "미완료"
-            else:
-                status = "미완료"
+                    # 기존 메시지를 삭제 후 같은 채널에 재전송을 시도합니다. 실패 시 DM -> ephemeral으로 폴백합니다.
+                    try:
+                        try:
+                            await msg.delete()
+                        except Exception as e:
+                            print("기존 메시지 삭제 실패:", type(e).__name__, e)
+                        new_msg = await ch.send(content=f"{self._format_display_date(ld)} 일일 루틴 진행 상태입니다!", view=new_view)
+                        self.last_checkin_message[key] = {"channel_id": new_msg.channel.id, "message_id": new_msg.id}
+                        print("메시지 재전송 성공(편집 대신)")
+                    except Exception as e:
+                        print("같은 채널 재전송 실패, DM으로 전송 시도:", type(e).__name__, e)
+                        try:
+                            dm = await itx.user.send(content=f"{self._format_display_date(ld)} 일일 루틴 진행 상태입니다!", view=new_view)
+                            self.last_checkin_message[key] = {"channel_id": dm.channel.id, "message_id": dm.id}
+                            print("DM 재전송 성공(편집 대신)")
+                        except Exception as e:
+                            print("DM 재전송 실패, ephemeral로 재전송:", type(e).__name__, e)
+                            try:
+                                await itx.followup.send(f"{self._format_display_date(ld)} 일일 루틴 진행 상태입니다!", view=new_view, ephemeral=True)
+                            except Exception as e:
+                                print("ephemeral 재전송 실패:", type(e).__name__, e)
         except Exception as e:
-            print("get_checkin 에러:", e)
-            status = "상태 알 수 없음"
-
-        # 원본 메시지(특히 에페메랄)는 봇이 편집할 수 없는 경우가 많아 편집 대신 followup으로 상태를 알립니다.
-        await itx.followup.send(f"처리 완료: {status}", ephemeral=True)
-
+            print("메시지 갱신 중 오류:", type(e).__name__, e)
 
 async def setup(bot: commands.Bot):
     await bot.add_cog(RoutineCog(bot))
