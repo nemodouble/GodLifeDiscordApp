@@ -199,7 +199,6 @@ class RoutineManagerView(discord.ui.View):
             def make_edit_cb(rid_inner: int):
                 async def cb(itx: discord.Interaction):
                     print(f"RoutineManagerView: edit 클릭 rid={rid_inner} by", itx.user)
-                    await itx.response.defer(ephemeral=True)
                     cog = itx.client.get_cog('UICog')
                     if cog:
                         try:
@@ -255,7 +254,6 @@ class GoalManagerView(discord.ui.View):
             def make_edit_cb(gid_inner: int):
                 async def cb(itx: discord.Interaction):
                     print(f"GoalManagerView: edit 클릭 gid={gid_inner} by", itx.user)
-                    await itx.response.defer(ephemeral=True)
                     cog = itx.client.get_cog('UICog')
                     if cog:
                         try:
@@ -293,4 +291,3 @@ class GoalManagerView(discord.ui.View):
             await itx.response.send_modal(AddGoalModal())
         btn_add.callback = add_goal_cb
         self.add_item(btn_add)
-

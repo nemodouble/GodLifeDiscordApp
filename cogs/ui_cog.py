@@ -55,6 +55,15 @@ class UICog(commands.Cog):
             await itx.followup.send("목표 관리 열기 중 오류가 발생했습니다.", ephemeral=True)
 
     async def open_edit_routine_modal(self, itx: discord.Interaction, rid: int):
+        # If the interaction has already been responded to, we cannot call send_modal.
+        try:
+            if itx.response.is_done():
+                await itx.followup.send("이 상호작용은 이미 응답되었습니다. 버튼을 다시 눌러주세요.", ephemeral=True)
+                return
+        except Exception:
+            # If inspection fails for any reason, continue and let send_modal raise if invalid.
+            pass
+
         # fetch routine data and open EditRoutineModal with initial values
         try:
             r = await routine_repo.get_routine(rid)
@@ -91,6 +100,13 @@ class UICog(commands.Cog):
 
     async def open_edit_goal_modal(self, itx: discord.Interaction, gid: int):
         try:
+            if itx.response.is_done():
+                await itx.followup.send("이 상호작용은 이미 응답되었습니다. 버튼을 다시 눌러주세요.", ephemeral=True)
+                return
+        except Exception:
+            pass
+
+        try:
             g = await goal_repo.get_goal(gid)
         except Exception as e:
             print("get_goal 에러:", e)
@@ -108,7 +124,7 @@ class UICog(commands.Cog):
 
     async def process_edit_goal(self, itx: discord.Interaction, gid: int, data: dict):
         try:
-            await goal_repo.update_goal(gid, title=data.get('title'), period=data.get('period'), target=int(data.get('target')) if data.get('target') else None, deadline=data.get('deadline'), carry_over=int(data.get('carry_over')) if data.get('carry_over') else None)
+            await goal_repo.update_goal(gid, title=data.get('title'), deadline=data.get('deadline'), description=data.get('description'))
             await itx.followup.send(f"목표 (id={gid})이(가) 수정되었습니다.", ephemeral=True)
         except Exception as e:
             print("update_goal 에러:", e)
@@ -141,7 +157,7 @@ class UICog(commands.Cog):
     async def process_add_goal(self, itx: discord.Interaction, data: dict):
         print("process_add_goal 호출 by", itx.user, data)
         try:
-            gid = await goal_repo.create_goal(str(itx.user.id), data.get('title'), data.get('period'), int(data.get('target')) if data.get('target') else 0, data.get('deadline'), int(data.get('carry_over')) if data.get('carry_over') else 0)
+            gid = await goal_repo.create_goal(str(itx.user.id), data.get('title'), data.get('deadline'), data.get('description'))
             await itx.followup.send(f"목표을 추가했습니다 (id={gid}).", ephemeral=True)
         except Exception as e:
             print("목표 생성 중 오류:", e)

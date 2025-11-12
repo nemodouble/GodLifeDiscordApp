@@ -55,11 +55,8 @@ CREATE TABLE IF NOT EXISTS goal (
   id INTEGER PRIMARY KEY AUTOINCREMENT,
   user_id TEXT NOT NULL,
   title TEXT NOT NULL,
-  period TEXT NOT NULL CHECK(period IN ('daily','weekly','monthly')),
-  target INTEGER NOT NULL,
-  current INTEGER NOT NULL DEFAULT 0,
-  carry_over INTEGER NOT NULL DEFAULT 0,
   deadline TEXT,
+  description TEXT,
   active INTEGER NOT NULL DEFAULT 1,
   created_at TEXT NOT NULL
 );

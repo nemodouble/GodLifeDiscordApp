@@ -29,24 +29,20 @@ class AddRoutineModal(discord.ui.Modal, title="루틴 추가"):
 
 class AddGoalModal(discord.ui.Modal, title="목표 추가"):
     title_field = discord.ui.TextInput(label="제목")
-    period = discord.ui.TextInput(label="주기 (days)")
-    target = discord.ui.TextInput(label="목표값")
     deadline = discord.ui.TextInput(label="마감(YYYY-MM-DD)", required=False)
-    carry_over = discord.ui.TextInput(label="이월 허용 여부(true|false)", required=False)
+    description = discord.ui.TextInput(label="설명", style=discord.TextStyle.paragraph, required=False)
 
     async def on_submit(self, itx: discord.Interaction):
         print("AddGoalModal submitted by", itx.user)
-        print("values:", self.title_field.value, self.period.value, self.target.value, self.deadline.value, self.carry_over.value)
+        print("values:", self.title_field.value, self.deadline.value, self.description.value)
         await itx.response.defer(ephemeral=True)
         cog = itx.client.get_cog("UICog")
         if cog:
             try:
                 await cog.process_add_goal(itx, {
                     "title": self.title_field.value,
-                    "period": self.period.value,
-                    "target": self.target.value,
                     "deadline": self.deadline.value,
-                    "carry_over": self.carry_over.value,
+                    "description": self.description.value,
                 })
             except Exception as e:
                 print("process_add_goal 호출 중 에러:", e)
@@ -72,7 +68,7 @@ class SkipReasonModal(discord.ui.Modal, title="스킵 사유"):
             except Exception as e:
                 print("process_skip_reason 호출 중 에러:", e)
         else:
-            await itx.followup.send("UICog를 찾을 수 없습니다.", ephemeral=True)
+            await itx.followup.send("RoutineCog를 찾을 수 없습니다.", ephemeral=True)
 
 
 class SettingsModal(discord.ui.Modal, title="설정"):
@@ -132,10 +128,8 @@ class EditRoutineModal(discord.ui.Modal, title="루틴 편집"):
 
 class EditGoalModal(discord.ui.Modal, title="목표 편집"):
     title_field = discord.ui.TextInput(label="제목")
-    period = discord.ui.TextInput(label="주기 (days)")
-    target = discord.ui.TextInput(label="목표값")
     deadline = discord.ui.TextInput(label="마감(YYYY-MM-DD)", required=False)
-    carry_over = discord.ui.TextInput(label="이월 허용 여부(true|false)", required=False)
+    description = discord.ui.TextInput(label="설명", style=discord.TextStyle.paragraph, required=False)
 
     def __init__(self, goal_id: int, initial: Optional[dict] = None):
         super().__init__()
@@ -143,10 +137,8 @@ class EditGoalModal(discord.ui.Modal, title="목표 편집"):
         if initial:
             try:
                 self.title_field.default = initial.get('title', '')
-                self.period.default = initial.get('period', '')
-                self.target.default = str(initial.get('target', ''))
                 self.deadline.default = initial.get('deadline', '')
-                self.carry_over.default = str(initial.get('carry_over', ''))
+                self.description.default = initial.get('description', '')
             except Exception:
                 pass
 
@@ -158,13 +150,10 @@ class EditGoalModal(discord.ui.Modal, title="목표 편집"):
             try:
                 await cog.process_edit_goal(itx, self.gid, {
                     "title": self.title_field.value,
-                    "period": self.period.value,
-                    "target": self.target.value,
                     "deadline": self.deadline.value,
-                    "carry_over": self.carry_over.value,
+                    "description": self.description.value,
                 })
             except Exception as e:
                 print("process_edit_goal 호출 중 에러:", e)
         else:
             await itx.followup.send("UICog를 찾을 수 없습니다.", ephemeral=True)
-

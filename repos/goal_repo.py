@@ -6,13 +6,13 @@ from typing import Optional, List
 from db.db import connect_db
 
 
-async def create_goal(user_id: str, title: str, period: str, target: int, deadline: Optional[str] = None, carry_over: int = 0) -> int:
+async def create_goal(user_id: str, title: str, deadline: Optional[str] = None, description: Optional[str] = None) -> int:
     now = datetime.utcnow().isoformat()
     conn = await connect_db()
     try:
         cur = await conn.execute(
-            "INSERT INTO goal(user_id, title, period, target, current, carry_over, deadline, active, created_at) VALUES(?, ?, ?, ?, 0, ?, ?, 1, ?)",
-            (user_id, title, period, target, carry_over, deadline, now),
+            "INSERT INTO goal(user_id, title, deadline, description, active, created_at) VALUES(?, ?, ?, ?, 1, ?)",
+            (user_id, title, deadline, description, now),
         )
         await conn.commit()
         return cur.lastrowid
@@ -63,4 +63,3 @@ async def list_active_goals_for_user(user_id: str) -> List[dict]:
         return [dict(r) for r in rows]
     finally:
         await conn.close()
-
