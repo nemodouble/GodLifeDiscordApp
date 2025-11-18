@@ -21,6 +21,38 @@ def window_dates(scope: Optional[str], today_local: date) -> Optional[List[date]
     return None
 
 
+async def _routine_start_date(routine: Dict[str, Any], today_local: date) -> date:
+    """루틴이 실제로 유효해지는 시작일을 반환.
+
+    우선순위:
+      1) routine["start_date"] (YYYY-MM-DD)
+      2) routine["created_at"] (ISO datetime)
+      3) (today_local - 365일)
+    """
+    # 1) 명시적 start_date 우선
+    sd = routine.get("start_date")
+    if sd:
+        try:
+            return datetime.fromisoformat(str(sd)).date()
+        except Exception:
+            try:
+                return date.fromisoformat(str(sd))
+            except Exception:
+                pass
+
+    # 2) created_at 사용
+    created_at = routine.get("created_at")
+    if created_at:
+        try:
+            dt = datetime.fromisoformat(str(created_at))
+            return local_day(dt)
+        except Exception:
+            pass
+
+    # 3) fallback: 1년 전
+    return today_local - timedelta(days=365)
+
+
 async def count_done_days(routine_id: int, dates: Optional[List[date]]) -> Tuple[int, List[date]]:
     """주어진 날짜들 중 완료(checked_at IS NOT NULL, skipped = 0)로 표시된 날짜 수와 날짜 목록 반환.
 
@@ -62,6 +94,14 @@ async def count_valid_days(user_id: str, routine: Dict[str, Any], dates: Optiona
     if dates is None:
         return 0, []
 
+    # 루틴 시작일 이전 날짜는 분모에서 제외
+    today_local = local_day(now_kst())
+    start_date = await _routine_start_date(routine, today_local)
+    # dates는 모두 today_local 이전이므로 단순 필터 가능
+    dates = [d for d in dates if d >= start_date]
+    if not dates:
+        return 0, []
+
     # 미리 DB에서 스킵 정보를 가져와서 파싱
     conn = await connect_db()
     try:
@@ -91,6 +131,7 @@ async def count_valid_days(user_id: str, routine: Dict[str, Any], dates: Optiona
 
 
 async def _build_date_range(start: date, end: date) -> List[date]:
+    """시작일과 종료일 사이의 모든 날짜 리스트를 생성."""
     days: List[date] = []
     cur = start
     while cur <= end:
@@ -112,30 +153,8 @@ async def calc_streak(user_id: str, routine: Dict[str, Any]) -> Tuple[int, int]:
     # 오늘의 local_day
     today = local_day(now_kst())
 
-    # 시작일 결정: 루틴.created_at 우선, 없으면 DB의 가장 오래된 체크인, 또 없으면 365일 전
-    start_date: Optional[date] = None
-    created_at = routine.get("created_at")
-    if created_at:
-        try:
-            dt = datetime.fromisoformat(created_at)
-            start_date = local_day(dt)
-        except Exception:
-            start_date = None
-
-    if start_date is None:
-        # DB에서 earliest local_day 조회
-        conn = await connect_db()
-        try:
-            cur = await conn.execute("SELECT MIN(local_day) as m FROM routine_checkin WHERE routine_id = ?", (routine["id"],))
-            row = await cur.fetchone()
-            await cur.close()
-            if row and row["m"]:
-                start_date = datetime.fromisoformat(row["m"]).date()
-        finally:
-            await conn.close()
-
-    if start_date is None:
-        start_date = today - timedelta(days=365)
+    # 시작일 결정: 루틴 시작일 헬퍼 사용
+    start_date: Optional[date] = await _routine_start_date(routine, today)
 
     # 전체 날짜 리스트
     all_dates = await _build_date_range(start_date, today)
@@ -208,16 +227,8 @@ async def aggregate_user_metrics(user_id: str, routines: List[Dict[str, Any]], s
         # 범위 날짜 리스트 계산
         dates = window_dates(scope, today_local)
         if dates is None:
-            # all: 생성일~오늘
-            created_at = r.get("created_at")
-            if created_at:
-                try:
-                    dt = datetime.fromisoformat(created_at)
-                    start = local_day(dt)
-                except Exception:
-                    start = today_local - timedelta(days=365)
-            else:
-                start = today_local - timedelta(days=365)
+            # all: 시작일 ~ 오늘
+            start = await _routine_start_date(r, today_local)
             dates = await _build_date_range(start, today_local)
 
         valid_count, valid_days = await count_valid_days(str(user_id), r, dates)
@@ -242,4 +253,3 @@ async def aggregate_user_metrics(user_id: str, routines: List[Dict[str, Any]], s
     avg_rate = (total_rate / len(results)) if results else 0.0
 
     return {"by_routine": results, "summary": {"avg_rate": avg_rate, "total_done": total_done, "total_valid": total_valid}}
-
