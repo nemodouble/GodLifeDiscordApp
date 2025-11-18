@@ -6,6 +6,37 @@ from domain.stats import aggregate_user_metrics
 from domain.time_utils import now_kst, local_day
 
 
+class ReportResendView(discord.ui.View):
+    """에페메럴 리포트를 일반 메시지로 다시 보내는 버튼을 제공하는 뷰."""
+
+    def __init__(self, original_embed: discord.Embed, scope: str, timeout: float | None = 300):
+        super().__init__(timeout=timeout)
+        # embed는 이 View 인스턴스 수명 동안만 참조하므로 그대로 보관
+        self.original_embed = original_embed
+        self.scope = scope
+
+    @discord.ui.button(label="일반 채널에 공유하기", style=discord.ButtonStyle.primary, custom_id="ui:report:resend")
+    async def resend_button(self, itx: discord.Interaction, button: discord.ui.Button):
+        print("ReportResendView: resend_button 클릭 by", itx.user)
+        # 동일 채널에 일반(비-에페메럴) 메시지로 embed 재전송
+        try:
+            await itx.channel.send(embed=self.original_embed)
+        except Exception as e:
+            print("ReportResendView: 채널 전송 에러:", e)
+            # 에러는 여전히 에페메럴로 안내
+            await itx.response.send_message("리포트를 다시 보내는 중 오류가 발생했습니다.", ephemeral=True)
+            return
+
+        # 버튼을 누른 에페메럴 메시지는 간단 안내만 남기도록 업데이트 (가능하면)
+        try:
+            if not itx.response.is_done():
+                await itx.response.edit_message(content="리포트를 채널에 다시 보냈습니다.", view=None)
+            else:
+                await itx.edit_original_response(content="리포트를 채널에 다시 보냈습니다.", view=None)
+        except Exception as e:
+            print("ReportResendView: 에페메럴 메시지 업데이트 에러:", e)
+
+
 class ReportCog(commands.Cog):
     """루틴 달성 리포트를 임베드로 보여주는 Cog.
 
@@ -108,7 +139,8 @@ class ReportCog(commands.Cog):
             return
 
         embed = self._build_summary_embed(itx.user, metrics, scope)
-        await itx.followup.send(embed=embed, ephemeral=True)
+        # 에페메럴 리포트 + 일반 채널 재전송용 버튼 뷰 함께 전송
+        await itx.followup.send(embed=embed, view=ReportResendView(embed, scope), ephemeral=True)
 
     @commands.Cog.listener()
     async def on_ready(self):
