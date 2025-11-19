@@ -72,30 +72,37 @@ class RoutineCog(commands.Cog):
         await itx.followup.send(f"스킵이 정상적으로 처리되었습니다. (루틴 #{info['rid']})", ephemeral=True)
 
     async def open_today_checkin_list(self, itx: discord.Interaction):
-        # 현재 KST 기준 local_day를 사용
+        """오늘 일일 루틴 진행 상태 패널을 전송한다.
+
+        - 첫 응답은 interaction.response.send_message 를 사용해 채널 메시지로 보냄
+        - 실패 시 followup.send 또는 DM 으로 폴백
+        """
         user_id = str(itx.user.id)
         now = now_kst()
         ld = local_day(now)
 
-        # 준비된(활성 & 주말모드 필터 통과) 루틴 목록
         try:
             routines = await routine_repo.prepare_checkin_for_date(user_id, now)
         except Exception as e:
             print("prepare_checkin_for_date 에러:", e)
-            await itx.followup.send("루틴 목록을 불러오는 중 오류가 발생했습니다.", ephemeral=True)
+            # 아직 응답 전이면 response, 아니면 followup 사용
+            try:
+                if not itx.response.is_done():
+                    await itx.response.send_message("루틴 목록을 불러오는 중 오류가 발생했습니다.", ephemeral=True)
+                else:
+                    await itx.followup.send("루틴 목록을 불러오는 중 오류가 발생했습니다.", ephemeral=True)
+            except Exception:
+                pass
             return
 
-        # 필터링 + 상태 수집
         display = []
         for r in routines:
             try:
                 if await is_valid_day(user_id, r.get("weekend_mode", "weekday"), ld):
-                    # 현재 상태 조회
                     try:
                         ci = await checkin_repo.get_checkin(r["id"], ld.isoformat())
                     except Exception:
                         ci = None
-                    # 이모지 매핑: 미완료 -> ❌, 완료 -> ✅, 스킵 -> ➡️
                     if ci and ci.get("skipped"):
                         emoji = "➡️"
                     elif ci and ci.get("checked_at"):
@@ -108,49 +115,49 @@ class RoutineCog(commands.Cog):
                 continue
 
         if not display:
-            await itx.followup.send("오늘 체크인 대상 루틴이 없습니다.", ephemeral=True)
+            try:
+                if not itx.response.is_done():
+                    await itx.response.send_message("오늘 체크인 대상 루틴이 없습니다.", ephemeral=True)
+                else:
+                    await itx.followup.send("오늘 체크인 대상 루틴이 없습니다.", ephemeral=True)
+            except Exception:
+                pass
             return
 
-        # 하나의 메시지에 여러 버튼으로 전송(비-에페메럴로 전송)
         view = TodayCheckinView(display, ld.isoformat())
-        # register view so callbacks remain active while bot is running
         try:
             self.bot.add_view(view)
         except Exception as e:
             print("bot.add_view 등록 실패:", type(e).__name__, e)
-        print(f"open_today_checkin_list: prepared display_count={len(display)} view_children={len(view.children)}")
 
-        # 메시지 내용에 날짜 추가 (YY-MM-DD 형식)
         msg_content = f"{self._format_display_date(ld)} 일일 루틴 진행 상태입니다!"
 
-        # 우선 현재 채널에서 일반 메시지로 전송 시도
+        # 첫 응답으로 채널 메시지를 시도 (response.send_message)
         try:
-            channel = itx.channel
-            if channel is not None:
-                msg = await channel.send(content=msg_content, view=view)
-                self.last_checkin_message[(user_id, ld.isoformat())] = {"channel_id": msg.channel.id, "message_id": msg.id}
+            if not itx.response.is_done():
+                await itx.response.send_message(content=msg_content, view=view, ephemeral=False)
+                self.last_checkin_message[(user_id, ld.isoformat())] = {"channel_id": itx.channel.id if itx.channel else 0, "message_id": 0}
                 return
         except Exception as e:
-            print("채널 전송 실패, DM 시도 또는 fallback 처리합니다:", e)
+            print("response.send_message 전송 실패, followup/DM 폴백:", e)
 
-        # 채널 전송 실패 시 DM 시도
+        # 이미 응답이 된 상태거나 위에서 실패한 경우: followup 또는 DM 폴백
+        try:
+            msg = await itx.followup.send(content=msg_content, view=view, ephemeral=False)
+            self.last_checkin_message[(user_id, ld.isoformat())] = {"channel_id": msg.channel.id, "message_id": msg.id}
+            return
+        except Exception as e:
+            print("followup 전송 실패, DM 시도:", e)
+
         try:
             dm = await itx.user.send(content=msg_content, view=view)
             self.last_checkin_message[(user_id, ld.isoformat())] = {"channel_id": dm.channel.id, "message_id": dm.id}
-            return
         except Exception as e:
-            print("DM 전송 실패, ephemeral로 전송합니다:", e)
+            print("DM 전송 실패, 최종 실패로 처리:", e)
 
-        # 모든 시도 실패 시 ephemeral(사용자에게만 보이는)으로 알림
-        try:
-            await itx.followup.send(msg_content, view=view, ephemeral=True)
-        except Exception as e:
-            print("ephemeral 전송 실패:", e)
 
     async def handle_toggle_button(self, itx: discord.Interaction, rid: int, yyyymmdd: str):
         # 상태 순환: 미완료 -> 완료 -> 스킵 -> 미달성
-        #        await itx.response.defer(ephemeral=True)
-        # 상태 변경시 최종 ephemeral 응답 전송 기능 제거: defer는 기본(비-ephemeral)로 수행
         await itx.response.defer()
         user_id = str(itx.user.id)
 

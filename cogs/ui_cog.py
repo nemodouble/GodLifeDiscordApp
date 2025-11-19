@@ -4,7 +4,7 @@ from discord import app_commands
 from discord.ext import commands
 
 from ui.views import MainPanelView, RoutineManagerView, GoalManagerView
-from ui.modals import EditRoutineModal, EditGoalModal
+from ui.modals import EditRoutineModal, EditGoalModal, SettingsModal
 from repos import routine_repo
 from repos import goal_repo
 from repos import user_settings_repo
@@ -16,12 +16,52 @@ class UICog(commands.Cog):
     def __init__(self, bot: commands.Bot):
         self.bot = bot
 
-    @app_commands.command(name="routine", description="루틴 패널 전송 (테스트용)")
+    @app_commands.command(name="checkin", description="오늘 일일 체크인 패널을 엽니다.")
+    async def checkin(self, interaction: discord.Interaction):
+        """일일 체크인 패널(오늘 루틴 진행 상태 + 토글 버튼)을 여는 명령"""
+        print("/checkin 실행 by", interaction.user)
+        cog = interaction.client.get_cog("RoutineCog")
+        if cog:
+            try:
+                await cog.open_today_checkin_list(interaction)
+            except Exception as e:
+                print("open_today_checkin_list 에러:", e)
+                try:
+                    if not interaction.response.is_done():
+                        await interaction.response.send_message("오늘 체크인 열기 중 오류가 발생했습니다.", ephemeral=True)
+                    else:
+                        await interaction.followup.send("오늘 체크인 열기 중 오류가 발생했습니다.", ephemeral=True)
+                except Exception:
+                    pass
+        else:
+            try:
+                if not interaction.response.is_done():
+                    await interaction.response.send_message("RoutineCog를 찾을 수 없습니다.", ephemeral=True)
+                else:
+                    await interaction.followup.send("RoutineCog를 찾을 수 없습니다.", ephemeral=True)
+            except Exception:
+                pass
+
+    @app_commands.command(name="routine", description="루틴 관리 패널을 엽니다.")
     async def routine(self, interaction: discord.Interaction):
+        """루틴 관리 패널을 여는 명령"""
         print("/routine 실행 by", interaction.user)
-        # 채널에 패널 전송
-        # 호출자에게만 보이는 에페메랄 메시지로 변경
-        await interaction.response.send_message("루틴 패널입니다. 버튼을 사용하세요.", view=MainPanelView(), ephemeral=True)
+        await interaction.response.defer(ephemeral=True)
+        await self.open_routine_manager(interaction)
+
+    @app_commands.command(name="goal", description="목표 관리 패널을 엽니다.")
+    async def goal(self, interaction: discord.Interaction):
+        """목표 관리 패널을 여는 명령"""
+        print("/goal 실행 by", interaction.user)
+        await interaction.response.defer(ephemeral=True)
+        await self.open_goal_manager(interaction)
+
+    @app_commands.command(name="setting", description="개인 설정을 관리합니다.")
+    async def setting(self, interaction: discord.Interaction):
+        """설정(리마인더 시간 등) 관리 패널을 여는 명령"""
+        print("/setting 실행 by", interaction.user)
+        # 현재는 리마인더 시간 하나만 설정
+        await interaction.response.send_modal(SettingsModal())
 
     async def open_routine_manager(self, itx: discord.Interaction):
         """사용자 루틴 목록을 조회하고 RoutineManagerView를 에페메랄로 전송합니다."""
@@ -199,21 +239,6 @@ class UICog(commands.Cog):
             print("scheduler trigger 에러:", e)
 
         await itx.followup.send("설정이 저장되었습니다.", ephemeral=True)
-
-    @app_commands.command(name="debug_reminder", description="(디버그) 특정 사용자에게 테스트 리마인더 DM 전송")
-    async def debug_reminder(self, interaction: discord.Interaction, user_id: str):
-        print("/debug_reminder 호출 by", interaction.user, "target=", user_id)
-        await interaction.response.defer(ephemeral=True)
-        scheduler = interaction.client.get_cog('SchedulerCog')
-        if not scheduler:
-            await interaction.followup.send("SchedulerCog를 찾을 수 없습니다.", ephemeral=True)
-            return
-        try:
-            await scheduler._safe_send_dm(user_id, f"테스트 리마인더: {interaction.user}에서 보냄")
-            await interaction.followup.send("테스트 리마인더 전송 시도됨.", ephemeral=True)
-        except Exception as e:
-            print("debug_reminder error:", e)
-            await interaction.followup.send(f"전송 도중 오류: {e}", ephemeral=True)
 
 
 async def setup(bot: commands.Bot):
