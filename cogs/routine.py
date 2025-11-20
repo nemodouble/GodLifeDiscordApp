@@ -232,49 +232,118 @@ class RoutineCog(commands.Cog):
                     msg = await ch.fetch_message(info["message_id"])
                 except Exception as e:
                     print("기존 메시지 조회 실패:", type(e).__name__, e)
-                    # 메시지 정보를 못 찾으면 새로 전송(ephemeral 포함)로 fallback
+                    # 메시지 정보를 못 찾으면 우선 같은 채널에 새로 전송을 시도하고, 실패 시 ephemeral -> DM 순서로 시도
+                    # 2. 삭제 후 재전송은 이 케이스에선 대상 메시지가 없어 생략됨
                     try:
-                        await itx.followup.send(f"{self._format_display_date(ld)} 일일 루틴 진행 상태입니다!", view=new_view, ephemeral=True)
-                    except Exception as e:
-                        print("ephemeral 재전송 실패:", type(e).__name__, e)
+                        new_msg = await itx.channel.send(
+                            content=f"{self._format_display_date(ld)} 일일 루틴 진행 상태입니다!",
+                            view=new_view,
+                        )
+                        self.last_checkin_message[key] = {"channel_id": new_msg.channel.id, "message_id": new_msg.id}
+                        print("기존 메시지 조회 실패 후, 채널에 새 메시지 재전송 성공")
+                    except Exception as e_send:
+                        print("기존 메시지 조회 실패 후, 채널 재전송 실패:", type(e_send).__name__, e_send)
+                        try:
+                            await itx.followup.send(
+                                f"{self._format_display_date(ld)} 일일 루틴 진행 상태입니다!",
+                                view=new_view,
+                                ephemeral=True,
+                            )
+                            print("ephemeral 재전송 성공 (조회 실패 케이스)")
+                        except Exception as e_ep:
+                            print("ephemeral 재전송 실패 (조회 실패 케이스), DM 시도:", type(e_ep).__name__, e_ep)
+                            try:
+                                dm = await itx.user.send(
+                                    content=f"{self._format_display_date(ld)} 일일 루틴 진행 상태입니다!",
+                                    view=new_view,
+                                )
+                                self.last_checkin_message[key] = {"channel_id": dm.channel.id, "message_id": dm.id}
+                                print("DM 재전송 성공 (조회 실패 케이스)")
+                            except Exception as e_dm:
+                                print("DM 재전송 실패 (조회 실패 케이스):", type(e_dm).__name__, e_dm)
                 else:
-                    # 1차 시도: 기존 메시지를 edit만 수행 (삭제 없이)
+                    # 1. 기존 메시지 edit 시도
                     try:
-                        await msg.edit(content=f"{self._format_display_date(ld)} 일일 루틴 진행 상태입니다!", view=new_view)
-                        print("기존 메시지 edit 성공 (delete 없이)")
+                        await msg.edit(
+                            content=f"{self._format_display_date(ld)} 일일 루틴 진행 상태입니다!",
+                            view=new_view,
+                        )
+                        print("기존 메시지 edit 성공")
                     except Exception as e:
-                        print("기존 메시지 edit 실패, 재전송 fallback 시도:", type(e).__name__, e)
-                        # edit 실패 시에만 delete + resend / DM / ephemeral 순으로 fallback
+                        print("기존 메시지 edit 실패, 삭제 후 재전송 시도:", type(e).__name__, e)
+                        # 2. 삭제 후 같은 채널에 재전송 시도
                         try:
                             try:
                                 await msg.delete()
                             except Exception as e_del:
                                 print("기존 메시지 삭제 실패(무시):", type(e_del).__name__, e_del)
-                            new_msg = await ch.send(content=f"{self._format_display_date(ld)} 일일 루틴 진행 상태입니다!", view=new_view)
+                            new_msg = await ch.send(
+                                content=f"{self._format_display_date(ld)} 일일 루틴 진행 상태입니다!",
+                                view=new_view,
+                            )
                             self.last_checkin_message[key] = {"channel_id": new_msg.channel.id, "message_id": new_msg.id}
-                            print("메시지 재전송 성공 (fallback)")
+                            print("삭제 후 같은 채널 재전송 성공")
                         except Exception as e_send:
-                            print("같은 채널 재전송 실패, DM 시도:", type(e_send).__name__, e_send)
+                            print("삭제 후 같은 채널 재전송 실패, 임페리얼 전송 시도:", type(e_send).__name__, e_send)
+                            # 3. 임페리얼(followup, ephemeral=True) 전송 시도
                             try:
-                                dm = await itx.user.send(content=f"{self._format_display_date(ld)} 일일 루틴 진행 상태입니다!", view=new_view)
-                                self.last_checkin_message[key] = {"channel_id": dm.channel.id, "message_id": dm.id}
-                                print("DM 재전송 성공 (fallback)")
-                            except Exception as e_dm:
-                                print("DM 재전송 실패, ephemeral로 재전송:", type(e_dm).__name__, e_dm)
+                                await itx.followup.send(
+                                    f"{self._format_display_date(ld)} 일일 루틴 진행 상태입니다!",
+                                    view=new_view,
+                                    ephemeral=True,
+                                )
+                                print("임페리얼 재전송 성공")
+                            except Exception as e_ep:
+                                print("임페리얼 재전송 실패, DM 전송 시도:", type(e_ep).__name__, e_ep)
+                                # 4. DM 전송 시도
                                 try:
-                                    await itx.followup.send(f"{self._format_display_date(ld)} 일일 루틴 진행 상태입니다!", view=new_view, ephemeral=True)
-                                except Exception as e_ep:
-                                    print("ephemeral 재전송 실패:", type(e_ep).__name__, e_ep)
+                                    dm = await itx.user.send(
+                                        content=f"{self._format_display_date(ld)} 일일 루틴 진행 상태입니다!",
+                                        view=new_view,
+                                    )
+                                    self.last_checkin_message[key] = {"channel_id": dm.channel.id, "message_id": dm.id}
+                                    print("DM 재전송 성공")
+                                except Exception as e_dm:
+                                    print("DM 재전송 실패:", type(e_dm).__name__, e_dm)
             else:
-                # last_checkin_message 기록이 없는 경우: 단순히 followup + 뷰 전송(ephemeral)로 처리
+                # last_checkin_message 기록이 없는 경우: 우선 같은 채널에 새로 전송, 실패 시 임페리얼, 그 다음 DM 순서
                 try:
-                    await itx.followup.send(f"{self._format_display_date(ld)} 일일 루틴 진행 상태입니다!", view=new_view, ephemeral=True)
-                except Exception as e:
-                    print("handle_toggle_button: last message 없음 + followup 실패:", type(e).__name__, e)
+                    if itx.channel:
+                        new_msg = await itx.channel.send(
+                            content=f"{self._format_display_date(ld)} 일일 루틴 진행 상태입니다!",
+                            view=new_view,
+                        )
+                        self.last_checkin_message[key] = {"channel_id": new_msg.channel.id, "message_id": new_msg.id}
+                        print("last_checkin_message 없음: 채널 새 전송 성공")
+                        return
+                except Exception as e_ch:
+                    print("last_checkin_message 없음: 채널 새 전송 실패, 임페리얼 시도:", type(e_ch).__name__, e_ch)
+
+                try:
+                    await itx.followup.send(
+                        f"{self._format_display_date(ld)} 일일 루틴 진행 상태입니다!",
+                        view=new_view,
+                        ephemeral=True,
+                    )
+                    print("last_checkin_message 없음: 임페리얼 전송 성공")
+                except Exception as e_ep:
+                    print("last_checkin_message 없음: 임페리얼 전송 실패, DM 시도:", type(e_ep).__name__, e_ep)
+                    try:
+                        dm = await itx.user.send(
+                            content=f"{self._format_display_date(ld)} 일일 루틴 진행 상태입니다!",
+                            view=new_view,
+                        )
+                        self.last_checkin_message[key] = {"channel_id": dm.channel.id, "message_id": dm.id}
+                        print("last_checkin_message 없음: DM 전송 성공")
+                    except Exception as e_dm:
+                        print("last_checkin_message 없음: DM 전송 최종 실패:", type(e_dm).__name__, e_dm)
         except Exception as e:
             print("handle_toggle_button 전체 처리 중 예기치 못한 에러:", type(e).__name__, e)
             try:
-                await itx.followup.send(f"상태는 '{new_status}'로 변경되었지만 메시지 갱신 중 오류가 발생했습니다.", ephemeral=True)
+                await itx.followup.send(
+                    f"상태는 '{new_status}'로 변경되었지만 메시지 갱신 중 오류가 발생했습니다.",
+                    ephemeral=True,
+                )
             except Exception:
                 pass
 
