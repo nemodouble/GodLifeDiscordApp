@@ -6,10 +6,11 @@ class AddRoutineModal(discord.ui.Modal, title="루틴 추가"):
     weekend_mode = discord.ui.TextInput(label="주말 모드(weekday|weekend|all)")
     deadline_time = discord.ui.TextInput(label="마감(HH:MM)", required=False)
     notes = discord.ui.TextInput(label="메모", style=discord.TextStyle.paragraph, required=False)
+    order_index = discord.ui.TextInput(label="표시 순서(숫자, 작을수록 위)", required=False)
 
     async def on_submit(self, itx: discord.Interaction):
         print("AddRoutineModal submitted by", itx.user)
-        print("values:", self.name.value, self.weekend_mode.value, self.deadline_time.value, self.notes.value)
+        print("values:", self.name.value, self.weekend_mode.value, self.deadline_time.value, self.notes.value, self.order_index.value)
         # 에페메랄 ACK
         await itx.response.defer(ephemeral=True)
         cog = itx.client.get_cog("UICog")
@@ -20,6 +21,7 @@ class AddRoutineModal(discord.ui.Modal, title="루틴 추가"):
                     "weekend_mode": self.weekend_mode.value,
                     "deadline_time": self.deadline_time.value,
                     "notes": self.notes.value,
+                    "order_index": self.order_index.value,
                 })
             except Exception as e:
                 print("process_add_routine 호출 중 에러:", e)
@@ -94,6 +96,7 @@ class EditRoutineModal(discord.ui.Modal, title="루틴 편집"):
     weekend_mode = discord.ui.TextInput(label="주말 모드(weekday|weekend|all)")
     deadline_time = discord.ui.TextInput(label="마감(HH:MM)", required=False)
     notes = discord.ui.TextInput(label="메모", style=discord.TextStyle.paragraph, required=False)
+    order_index = discord.ui.TextInput(label="표시 순서(숫자, 작을수록 위)", required=False)
 
     def __init__(self, routine_id: int, initial: Optional[dict] = None):
         super().__init__()
@@ -105,6 +108,8 @@ class EditRoutineModal(discord.ui.Modal, title="루틴 편집"):
                 self.weekend_mode.default = initial.get('weekend_mode', '')
                 self.deadline_time.default = initial.get('deadline_time', '')
                 self.notes.default = initial.get('notes', '')
+                if initial.get('order_index') is not None:
+                    self.order_index.default = str(initial.get('order_index'))
             except Exception:
                 pass
 
@@ -119,6 +124,7 @@ class EditRoutineModal(discord.ui.Modal, title="루틴 편집"):
                     "weekend_mode": self.weekend_mode.value,
                     "deadline_time": self.deadline_time.value,
                     "notes": self.notes.value,
+                    "order_index": self.order_index.value,
                 })
             except Exception as e:
                 print("process_edit_routine 호출 중 에러:", e)

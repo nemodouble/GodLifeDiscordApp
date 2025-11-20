@@ -7,13 +7,21 @@ from db.db import connect_db
 from domain.time_utils import local_day, is_applicable_day
 
 
-async def create_routine(user_id: str, name: str, weekend_mode: str = "weekday", deadline_time: Optional[str] = None, notes: Optional[str] = None, active: int = 1) -> int:
+async def create_routine(user_id: str, name: str, weekend_mode: str = "weekday", deadline_time: Optional[str] = None, notes: Optional[str] = None, active: int = 1, order_index: Optional[int] = None) -> int:
     now = datetime.utcnow().isoformat()
     conn = await connect_db()
     try:
+        # order_index 가 주어지지 않으면, 해당 user_id 의 현재 최대 order_index + 1 로 설정
+        if order_index is None:
+            cur = await conn.execute("SELECT COALESCE(MAX(order_index), 0) FROM routine WHERE user_id = ?", (user_id,))
+            row = await cur.fetchone()
+            await cur.close()
+            max_idx = row[0] if row else 0
+            order_index = max_idx + 1
+
         cur = await conn.execute(
-            "INSERT INTO routine(user_id, name, weekend_mode, deadline_time, notes, active, created_at) VALUES(?, ?, ?, ?, ?, ?, ?)",
-            (user_id, name, weekend_mode, deadline_time, notes, active, now),
+            "INSERT INTO routine(user_id, name, weekend_mode, deadline_time, notes, active, created_at, order_index) VALUES(?, ?, ?, ?, ?, ?, ?, ?)",
+            (user_id, name, weekend_mode, deadline_time, notes, active, now, order_index),
         )
         await conn.commit()
         return cur.lastrowid
@@ -58,7 +66,11 @@ async def delete_routine(routine_id: int) -> None:
 async def list_active_routines_for_user(user_id: str) -> List[dict]:
     conn = await connect_db()
     try:
-        cur = await conn.execute("SELECT * FROM routine WHERE user_id = ? AND active = 1", (user_id,))
+        # 정렬: order_index ASC, fallback 으로 id ASC
+        cur = await conn.execute(
+            "SELECT * FROM routine WHERE user_id = ? AND active = 1 ORDER BY COALESCE(order_index, id), id",
+            (user_id,),
+        )
         rows = await cur.fetchall()
         await cur.close()
         return [dict(r) for r in rows]
@@ -70,7 +82,10 @@ async def routines_applicable_for_date(user_id: str, d: date) -> List[dict]:
     """주어진 날짜(local_day) 기준으로 적용 가능한(주말모드에 맞는) 활성 루틴 목록을 반환한다."""
     conn = await connect_db()
     try:
-        cur = await conn.execute("SELECT * FROM routine WHERE user_id = ? AND active = 1", (user_id,))
+        cur = await conn.execute(
+            "SELECT * FROM routine WHERE user_id = ? AND active = 1 ORDER BY COALESCE(order_index, id), id",
+            (user_id,),
+        )
         rows = await cur.fetchall()
         await cur.close()
         result = []
@@ -86,4 +101,3 @@ async def prepare_checkin_for_date(user_id: str, dt: datetime) -> List[dict]:
     """주어진 시각(dt)의 local_day에 대해 체크인이 준비되어야 하는 루틴 목록 반환."""
     ld = local_day(dt)
     return await routines_applicable_for_date(user_id, ld)
-

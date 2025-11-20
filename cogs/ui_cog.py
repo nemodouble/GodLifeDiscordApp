@@ -126,7 +126,21 @@ class UICog(commands.Cog):
 
     async def process_edit_routine(self, itx: discord.Interaction, rid: int, data: dict):
         try:
-            await routine_repo.update_routine(rid, name=data.get('name'), weekend_mode=data.get('weekend_mode'), deadline_time=data.get('deadline_time'), notes=data.get('notes'))
+            fields = {
+                'name': data.get('name'),
+                'weekend_mode': data.get('weekend_mode'),
+                'deadline_time': data.get('deadline_time'),
+                'notes': data.get('notes'),
+            }
+            # order_index 가 전달되었다면 정수로 파싱하여 포함
+            raw_order = (data.get('order_index') or '').strip()
+            if raw_order:
+                try:
+                    fields['order_index'] = int(raw_order)
+                except ValueError:
+                    # 잘못된 값이면 무시하고 기존 값 유지
+                    pass
+            await routine_repo.update_routine(rid, **fields)
             await itx.followup.send(f"루틴 (id={rid})이(가) 수정되었습니다.", ephemeral=True)
         except Exception as e:
             print("update_routine 에러:", e)
@@ -184,12 +198,21 @@ class UICog(commands.Cog):
         print("process_add_routine 호출 by", itx.user, data)
         # DB에 루틴 생성
         try:
+            raw_order = (data.get('order_index') or '').strip()
+            order_index = None
+            if raw_order:
+                try:
+                    order_index = int(raw_order)
+                except ValueError:
+                    order_index = None
+
             rid = await routine_repo.create_routine(
                 str(itx.user.id),
                 data.get("name"),
                 data.get("weekend_mode"),
                 data.get("deadline_time"),
                 data.get("notes"),
+                order_index=order_index,
             )
             await itx.followup.send(f"루틴을 추가했습니다 (id={rid}).", ephemeral=True)
         except Exception as e:
