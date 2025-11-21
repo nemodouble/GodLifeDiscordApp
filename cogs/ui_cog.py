@@ -243,10 +243,26 @@ class UICog(commands.Cog):
 
     async def process_settings(self, itx: discord.Interaction, data: dict):
         print("process_settings 호출 by", itx.user, data)
-        # 저장: user_settings에 reminder_time을 upsert
+        # 저장: user_settings에 reminder_time 및 체크인 시 목표 제안 여부를 upsert
         try:
             reminder_time = data.get('reminder_time') or "23:00"
-            await user_settings_repo.upsert_user_settings(str(itx.user.id), reminder_time=reminder_time)
+            raw_suggest = (data.get('suggest_goals_on_checkin') or "").strip().lower()
+            # 빈 값이면 기본값 True
+            if raw_suggest in ("", None):
+                suggest_flag: bool | int = True
+            elif raw_suggest in ("0", "false", "no", "n"):
+                suggest_flag = False
+            elif raw_suggest in ("1", "true", "yes", "y"):
+                suggest_flag = True
+            else:
+                # 알 수 없는 값이면 안전하게 기본값 True
+                suggest_flag = True
+
+            await user_settings_repo.upsert_user_settings(
+                str(itx.user.id),
+                reminder_time=reminder_time,
+                suggest_goals_on_checkin=suggest_flag,
+            )
         except Exception as e:
             print("user_settings upsert 에러:", e)
             await itx.followup.send("설정 저장 중 오류가 발생했습니다.", ephemeral=True)

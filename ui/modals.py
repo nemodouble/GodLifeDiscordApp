@@ -75,15 +75,25 @@ class SkipReasonModal(discord.ui.Modal, title="스킵 사유"):
 
 class SettingsModal(discord.ui.Modal, title="설정"):
     reminder_time = discord.ui.TextInput(label="리마인더 시간(HH:MM)", required=False)
+    suggest_goals_on_checkin = discord.ui.TextInput(
+        label="체크인 시 목표 설정 제안 여부(true/false)", required=False,
+        placeholder="예: true 또는 false (비워두면 true로 간주)",
+    )
 
     async def on_submit(self, itx: discord.Interaction):
         print("SettingsModal submitted by", itx.user)
-        print("reminder_time:", self.reminder_time.value)
+        print("reminder_time:", self.reminder_time.value, "suggest_goals_on_checkin:", self.suggest_goals_on_checkin.value)
         await itx.response.defer(ephemeral=True)
         cog = itx.client.get_cog("UICog")
         if cog:
             try:
-                await cog.process_settings(itx, {"reminder_time": self.reminder_time.value})
+                await cog.process_settings(
+                    itx,
+                    {
+                        "reminder_time": self.reminder_time.value,
+                        "suggest_goals_on_checkin": self.suggest_goals_on_checkin.value,
+                    },
+                )
             except Exception as e:
                 print("process_settings 호출 중 에러:", e)
         else:

@@ -1,4 +1,5 @@
-﻿import discord
+﻿from datetime import date as _date, timedelta
+import discord
 from typing import Optional
 from .modals import AddRoutineModal, AddGoalModal, SkipReasonModal, SettingsModal
 
@@ -62,6 +63,103 @@ class MainPanelView(discord.ui.View):
         print("MainPanelView: 설정 버튼 클릭 by", itx.user)
         await itx.response.send_modal(SettingsModal())
 
+
+class GoalSuggestView(discord.ui.View):
+    """체크인 시 목표 설정 제안 에페메랄 메시지에 함께 붙는 View.
+
+    - 일간/주간/월간 목표 추가 버튼을 제공
+    - 각 버튼은 다른 마감일 기본값을 가진 AddGoalModal 을 연다.
+    """
+
+    def __init__(self, target_day: Optional[str] = None, timeout: Optional[float] = None):
+        super().__init__(timeout=timeout)
+        self.target_day = target_day  # "YYYY-MM-DD" or None
+
+        # 일간 목표 추가 버튼 (마감: target_day 또는 오늘)
+        btn_daily = discord.ui.Button(
+            label="일간 목표 추가",
+            style=discord.ButtonStyle.success,
+            custom_id="ui:goals:suggest_daily",
+        )
+
+        async def daily_cb(itx: discord.Interaction):
+            print("GoalSuggestView: 일간 목표 추가 버튼 클릭 by", itx.user)
+            ddl_str = self.target_day or _date.today().isoformat()
+            await self._open_goal_modal_with_deadline(itx, ddl_str)
+
+        btn_daily.callback = daily_cb
+        self.add_item(btn_daily)
+
+        # 주간 목표 추가 버튼 (마감: 해당 주 일요일)
+        btn_weekly = discord.ui.Button(
+            label="주간 목표 추가",
+            style=discord.ButtonStyle.primary,
+            custom_id="ui:goals:suggest_weekly",
+        )
+
+        async def weekly_cb(itx: discord.Interaction):
+            print("GoalSuggestView: 주간 목표 추가 버튼 클릭 by", itx.user)
+            base = self._parse_target_date_or_today()
+            # 월=0 ... 일=6 이라고 가정하고, 주간 마감은 이번 주 일요일로 설정
+            days_to_sunday = 6 - base.weekday()
+            sunday = base + timedelta(days=max(days_to_sunday, 0))
+            await self._open_goal_modal_with_deadline(itx, sunday.isoformat())
+
+        btn_weekly.callback = weekly_cb
+        self.add_item(btn_weekly)
+
+        # 월간 목표 추가 버튼 (마감: 다음 달 첫 번째 월요일 전날, 즉 그 전 일요일)
+        btn_monthly = discord.ui.Button(
+            label="월간 목표 추가",
+            style=discord.ButtonStyle.secondary,
+            custom_id="ui:goals:suggest_monthly",
+        )
+
+        async def monthly_cb(itx: discord.Interaction):
+            print("GoalSuggestView: 월간 목표 추가 버튼 클릭 by", itx.user)
+            base = self._parse_target_date_or_today()
+            # 다음 달 1일 계산
+            year = base.year + (1 if base.month == 12 else 0)
+            month = 1 if base.month == 12 else base.month + 1
+            first_of_next_month = _date(year, month, 1)
+            # 다음 달 첫 번째 월요일 찾기
+            offset = (0 - first_of_next_month.weekday()) % 7  # 0: Monday
+            first_monday = first_of_next_month + timedelta(days=offset)
+            # 마감일은 '다음 달 첫 번째 월요일 전날'(일요일)로 설정
+            deadline_date = first_monday - timedelta(days=1)
+            await self._open_goal_modal_with_deadline(itx, deadline_date.isoformat())
+
+        btn_monthly.callback = monthly_cb
+        self.add_item(btn_monthly)
+
+    def _parse_target_date_or_today(self) -> _date:
+        """target_day 문자열을 date로 변환하거나, 실패 시 오늘 날짜를 반환."""
+        if self.target_day:
+            try:
+                return _date.fromisoformat(str(self.target_day))
+            except Exception:
+                pass
+        return _date.today()
+
+    async def _open_goal_modal_with_deadline(self, itx: discord.Interaction, deadline_str: str):
+        """주어진 마감일 문자열을 기본값으로 갖는 AddGoalModal 을 연다.
+
+        - 제목은 비워두고, deadline 만 채운다.
+        """
+        modal = AddGoalModal()
+        try:
+            modal.deadline.default = deadline_str
+        except Exception as e:
+            print("GoalSuggestView: AddGoalModal default 설정 실패:", type(e).__name__, e)
+
+        try:
+            await itx.response.send_modal(modal)
+        except Exception as e:
+            print("GoalSuggestView: AddGoalModal send 실패:", type(e).__name__, e)
+            try:
+                await itx.followup.send("목표 추가 모달을 여는 중 오류가 발생했습니다.", ephemeral=True)
+            except Exception:
+                pass
 
 class RoutineActionView(discord.ui.View):
     def __init__(self, routine_id: int, yyyymmdd: str, label: str = None, timeout: Optional[float] = None):
