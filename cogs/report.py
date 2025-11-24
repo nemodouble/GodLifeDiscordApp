@@ -37,6 +37,49 @@ class ReportResendView(discord.ui.View):
             print("ReportResendView: 에페메럴 메시지 업데이트 에러:", e)
 
 
+class ReportScopeView(discord.ui.View):
+    """/report 명령 후 기간 선택 버튼(7일/30일/전체)을 제공하는 뷰."""
+
+    def __init__(self, cog: "ReportCog", user: discord.abc.User, timeout: float | None = 300):
+        super().__init__(timeout=timeout)
+        # generate_report 재사용을 위해 Cog 참조 저장
+        self.cog = cog
+        self.user_id = user.id
+
+    async def _ensure_owner(self, itx: discord.Interaction) -> bool:
+        """버튼을 누른 사용자가 원 요청자와 같은지 확인.
+
+        슬래시 명령을 실행한 사람만 사용하도록 제한한다.
+        """
+        if itx.user.id != self.user_id:
+            try:
+                await itx.response.send_message("이 리포트는 다른 사용자의 요청으로 생성되었습니다.", ephemeral=True)
+            except Exception:
+                pass
+            return False
+        return True
+
+    async def _handle_scope(self, itx: discord.Interaction, scope: str):
+        if not await self._ensure_owner(itx):
+            return
+        # defer 후 공통 로직 호출
+        if not itx.response.is_done():
+            await itx.response.defer(ephemeral=True)
+        await self.cog.generate_report(itx, scope)
+
+    @discord.ui.button(label="최근 7일", style=discord.ButtonStyle.primary, custom_id="ui:report:scope:7d")
+    async def scope_7d(self, itx: discord.Interaction, button: discord.ui.Button):
+        await self._handle_scope(itx, "7d")
+
+    @discord.ui.button(label="최근 30일", style=discord.ButtonStyle.secondary, custom_id="ui:report:scope:30d")
+    async def scope_30d(self, itx: discord.Interaction, button: discord.ui.Button):
+        await self._handle_scope(itx, "30d")
+
+    @discord.ui.button(label="전체 기간", style=discord.ButtonStyle.secondary, custom_id="ui:report:scope:all")
+    async def scope_all(self, itx: discord.Interaction, button: discord.ui.Button):
+        await self._handle_scope(itx, "all")
+
+
 class ReportCog(commands.Cog):
     """루틴 달성 리포트를 임베드로 보여주는 Cog.
 
@@ -148,11 +191,14 @@ class ReportCog(commands.Cog):
         print("ReportCog loaded: /report 명령 및 UI 리포트 버튼 사용 가능")
 
     @discord.app_commands.command(name="report", description="루틴 달성률 리포트를 보여줍니다.")
-    @discord.app_commands.describe(scope="통계를 볼 기간: 7d(기본), 30d, all")
-    async def report(self, itx: discord.Interaction, scope: str = "7d"):
-        # slash 명령은 여기서 defer 한 뒤 공통 로직 호출
-        await itx.response.defer(ephemeral=True)
-        await self.generate_report(itx, scope)
+    async def report(self, itx: discord.Interaction):
+        """/report 명령: 기간 선택 버튼이 포함된 에페메럴 메시지를 먼저 보낸다."""
+        view = ReportScopeView(self, itx.user)
+        await itx.response.send_message(
+            "보고 싶은 리포트 기간을 선택해 주세요.",
+            view=view,
+            ephemeral=True,
+        )
 
 
 async def setup(bot: commands.Bot):

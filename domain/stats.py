@@ -8,15 +8,19 @@ from domain.time_utils import is_valid_day, local_day, now_kst
 
 
 def window_dates(scope: Optional[str], today_local: date) -> Optional[List[date]]:
-    """주어된 범위(scope)에 대한 날짜 리스트를 반환.
+    """주어진 범위(scope)에 대한 날짜 리스트를 반환.
 
     scope: '7d' | '30d' | 'all' 또는 None
-    반환값: 날짜 리스트 (최근 포함, 역순 아님). 'all'의 경우 None 반환하여 호출자가 범위를 동적으로 계산하도록 함.
+    반환값: 날짜 리스트 (최근 포함, 역순 아님). 'all'의 경우 None 반환하여 호출자가 동적으로 범위를 계산.
+
+    개선: 리포트를 요청한 오늘(today_local)은 항상 제외하고 과거 날짜만 포함한다.
     """
     if scope == "7d":
-        return [today_local - timedelta(days=i) for i in range(0, 7)][::-1]
+        # 오늘 기준 직전 7일 (오늘 제외: today-1 ~ today-7)
+        return [today_local - timedelta(days=i) for i in range(1, 8)][::-1]
     if scope == "30d":
-        return [today_local - timedelta(days=i) for i in range(0, 30)][::-1]
+        # 오늘 기준 직전 30일 (오늘 제외)
+        return [today_local - timedelta(days=i) for i in range(1, 31)][::-1]
     # all -> None
     return None
 
@@ -208,13 +212,9 @@ async def calc_streak(user_id: str, routine: Dict[str, Any]) -> Tuple[int, int]:
 
 
 async def aggregate_user_metrics(user_id: str, routines: List[Dict[str, Any]], scope: Optional[str], today_local: Optional[date] = None) -> Dict[str, Any]:
-    """사용자 전체(루틴별 동일 가중치) 합산 지표를 계산하여 반환.
+    """사용자 전체(루틴별 동등 가중치) 합산 지표를 계산하여 반환.
 
-    반환 예시:
-      {
-        "by_routine": [ {"id": ..., "name": ..., "rate": 0.8, "done": x, "valid": y, "max_streak": a, "current_streak": b }, ... ],
-        "summary": {"avg_rate": 0.75, "total_done": N, "total_valid": M}
-      }
+    개선: all 범위에서도 오늘(today_local)은 제외하고, 루틴 시작일 ~ (today_local - 1) 사이만 집계한다.
     """
     if today_local is None:
         today_local = local_day(now_kst())
@@ -227,9 +227,14 @@ async def aggregate_user_metrics(user_id: str, routines: List[Dict[str, Any]], s
         # 범위 날짜 리스트 계산
         dates = window_dates(scope, today_local)
         if dates is None:
-            # all: 시작일 ~ 오늘
+            # all: 시작일 ~ 어제(today_local - 1)
             start = await _routine_start_date(r, today_local)
-            dates = await _build_date_range(start, today_local)
+            end = today_local - timedelta(days=1)
+            # 시작일이 end를 넘어가면 집계할 날짜 없음
+            if start > end:
+                dates = []
+            else:
+                dates = await _build_date_range(start, end)
 
         valid_count, valid_days = await count_valid_days(str(user_id), r, dates)
         done_count, _ = await count_done_days(r["id"], valid_days)
