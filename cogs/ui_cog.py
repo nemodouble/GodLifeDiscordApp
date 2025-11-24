@@ -24,8 +24,8 @@ class UICog(commands.Cog):
         if cog:
             try:
                 await cog.open_today_checkin_list(interaction)
-            except Exception as e:
-                print("open_today_checkin_list 에러:", e)
+            except Exception:
+                # 상세 에러는 콘솔에만 남기고, 사용자에게는 공통 에러 메시지 전송
                 try:
                     if not interaction.response.is_done():
                         await interaction.response.send_message("오늘 체크인 열기 중 오류가 발생했습니다.", ephemeral=True)

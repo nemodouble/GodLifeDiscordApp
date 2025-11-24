@@ -38,6 +38,37 @@ class RoutineCog(commands.Cog):
         except Exception:
             return str(ld)
 
+    async def _delete_existing_checkin_messages_in_channel(self, channel: Any, ld: Any) -> None:
+        """해당 채널에서 오늘자 체크인 패널(yy-mm-dd 로 시작하는 bot 메시지)을 찾아 삭제.
+
+        - 너무 오래된 메시지까지 뒤지지 않도록 limit/after 를 적절히 사용
+        - 삭제 실패는 로그만 출력하고 무시
+        """
+        prefix = f"{self._format_display_date(ld)} 일일 루틴 진행 상태입니다!"
+        # print(f"[RoutineCog] delete_existing_checkin_messages_in_channel: channel={getattr(channel, 'id', None)}, prefix='{prefix}'")
+
+        # 채널이 텍스트 채널/쓰레드가 아닌 DM 등의 경우에도 history 는 대부분 지원하지만,
+        # 혹시 모를 타입 문제를 피하기 위해 getattr 사용
+        history = getattr(channel, "history", None)
+        if history is None:
+            return
+
+        # 너무 과도하게 오래된 메시지를 보지 않도록 200개 정도만 조회
+        try:
+            async for msg in channel.history(limit=200):
+                try:
+                    if msg.author == channel.guild.me if hasattr(channel, "guild") and channel.guild else msg.author.bot:
+                        if isinstance(msg.content, str) and msg.content.startswith(prefix):
+                            try:
+                                await msg.delete()
+                            except Exception as e_del:
+                                print("_delete_existing_checkin_messages_in_channel: delete 실패:", type(e_del).__name__, e_del)
+                except Exception as e_inner:
+                    print("_delete_existing_checkin_messages_in_channel: 메시지 검사 중 오류:", type(e_inner).__name__, e_inner)
+                    continue
+        except Exception as e_hist:
+            print("_delete_existing_checkin_messages_in_channel: history 조회 실패:", type(e_hist).__name__, e_hist)
+
     async def record_pending_skip(self, channel_id: int, message_id: int, rid: int, yyyymmdd: str, user_id: int):
         key = (str(user_id), str(yyyymmdd))
         self.pending_skips[key] = {
@@ -135,8 +166,9 @@ class RoutineCog(commands.Cog):
                 await itx.response.send_message(message, ephemeral=True)
             else:
                 await itx.followup.send(message, ephemeral=True)
-        except Exception as e2:
-            print("_send_or_followup_error 실패:", type(e2).__name__, e2)
+        except Exception:
+            # 에러 응답도 실패한 경우는 콘솔에만 남겨도 충분하므로 조용히 무시
+            pass
 
     async def _record_last_message(self, user_id: str, day_str: str, msg: discord.Message):
         self.last_checkin_message[(user_id, day_str)] = {
@@ -248,8 +280,18 @@ class RoutineCog(commands.Cog):
         - 실패 시 False 반환 (fallback 경로에서 처리)
         """
         msg_content = f"{self._format_display_date(ld)} 일일 루틴 진행 상태입니다!"
+        # print(f"[RoutineCog] _send_checkin_panel_primary start: user_id={user_id}, ld={ld}, channel={getattr(itx.channel, 'id', None)}")
         try:
+            try:
+                channel = itx.channel or (await itx.user.create_dm())
+                # print(f"[RoutineCog] _send_checkin_panel_primary: resolved channel={getattr(channel, 'id', None)}")
+                if channel is not None:
+                    await self._delete_existing_checkin_messages_in_channel(channel, ld)
+            except Exception as e_del:
+                print("_send_checkin_panel_primary: 기존 패널 삭제 중 오류(무시):", type(e_del).__name__, e_del)
+
             if not itx.response.is_done():
+                # print("[RoutineCog] _send_checkin_panel_primary: sending original response")
                 msg = await itx.response.send_message(content=msg_content, view=view, ephemeral=False)
                 try:
                     if not isinstance(msg, discord.Message):
@@ -258,11 +300,14 @@ class RoutineCog(commands.Cog):
                     msg = await itx.original_response()
 
                 await self._record_last_message(user_id, ld.isoformat(), msg)
-                print("open_today_checkin_list: original response로 패널 전송 및 last_checkin_message 저장 성공")
+                # print("open_today_checkin_list: original response로 패널 전송 및 last_checkin_message 저장 성공")
 
                 # 패널 전송 후 별도의 에페메랄 목표 제안 메시지 전송
                 await self._send_goal_suggestion_ephemeral(itx, user_id, ld)
                 return True
+            else:
+                # print("[RoutineCog] _send_checkin_panel_primary: interaction.response already done, skip primary")
+                pass
         except Exception as e:
             print("_send_checkin_panel_primary: response.send_message 실패, fallback 필요:", type(e).__name__, e)
         return False
@@ -273,7 +318,16 @@ class RoutineCog(commands.Cog):
         original response 사용이 불가능하거나 1차 시도가 실패한 경우 호출됩니다.
         """
         msg_content = f"{self._format_display_date(ld)} 일일 루틴 진행 상태입니다!"
+        # print(f"[RoutineCog] _send_checkin_panel_fallback start: user_id={user_id}, ld={ld}, channel={getattr(itx.channel, 'id', None)}")
         try:
+            # fallback 경로에서도 동일 채널(또는 DM)에 기존 오늘자 패널이 있으면 먼저 삭제
+            try:
+                channel = itx.channel or (await itx.user.create_dm())
+                if channel is not None:
+                    await self._delete_existing_checkin_messages_in_channel(channel, ld)
+            except Exception as e_del:
+                print("_send_checkin_panel_fallback: 기존 패널 삭제 중 오류(무시):", type(e_del).__name__, e_del)
+
             if itx.response.is_done():
                 msg = await itx.followup.send(content=msg_content, view=view, ephemeral=False)
             else:
@@ -282,7 +336,7 @@ class RoutineCog(commands.Cog):
                 msg = await channel.send(content=msg_content, view=view)
 
             await self._record_last_message(user_id, ld.isoformat(), msg)
-            print("open_today_checkin_list: fallback 전송 및 last_checkin_message 저장 성공")
+            # print("open_today_checkin_list: fallback 전송 및 last_checkin_message 저장 성공")
         except Exception as e:
             print("_send_checkin_panel_fallback: 패널 전송 최종 실패:", type(e).__name__, e)
 
@@ -382,7 +436,7 @@ class RoutineCog(commands.Cog):
                 if itx.channel:
                     new_msg = await itx.channel.send(content=msg_content, view=new_view)
                     await self._record_last_message(user_id, yyyymmdd, new_msg)
-                    print("_update_existing_message_with_fallback: 채널에 새 메시지로 재전송 성공")
+                    # print("_update_existing_message_with_fallback: 채널에 새 메시지로 재전송 성공")
                     return
             except Exception as e_send:
                 print("_update_existing_message_with_fallback: 채널 재전송 실패:", type(e_send).__name__, e_send)
@@ -390,14 +444,14 @@ class RoutineCog(commands.Cog):
             # 채널 전송 실패 시 에페메랄/DM 순으로 폴백
             try:
                 await itx.followup.send(msg_content, view=new_view, ephemeral=True)
-                print("_update_existing_message_with_fallback: 에페메랄 재전송 성공")
+                # print("_update_existing_message_with_fallback: 에페메랄 재전송 성공")
                 return
             except Exception as e_ep:
                 print("_update_existing_message_with_fallback: 에페메랄 재전송 실패, DM 시도:", type(e_ep).__name__, e_ep)
                 try:
                     dm = await itx.user.send(content=msg_content, view=new_view)
                     await self._record_last_message(user_id, yyyymmdd, dm)
-                    print("_update_existing_message_with_fallback: DM 재전송 성공")
+                    # print("_update_existing_message_with_fallback: DM 재전송 성공")
                 except Exception as e_dm:
                     print("_update_existing_message_with_fallback: DM 재전송 실패:", type(e_dm).__name__, e_dm)
             return
@@ -405,7 +459,7 @@ class RoutineCog(commands.Cog):
         # 1차: 기존 메시지 edit 시도
         try:
             await msg.edit(content=msg_content, view=new_view)
-            print("_update_existing_message_with_fallback: 기존 메시지 edit 성공")
+            # print("_update_existing_message_with_fallback: 기존 메시지 edit 성공")
         except Exception as e:
             print("_update_existing_message_with_fallback: 기존 메시지 edit 실패, 삭제 후 재전송 시도:", type(e).__name__, e)
             # 2차: 삭제 후 같은 채널에 재전송
@@ -416,18 +470,18 @@ class RoutineCog(commands.Cog):
                     print("_update_existing_message_with_fallback: 기존 메시지 삭제 실패(무시):", type(e_del).__name__, e_del)
                 new_msg = await ch.send(content=msg_content, view=new_view)
                 await self._record_last_message(user_id, yyyymmdd, new_msg)
-                print("_update_existing_message_with_fallback: 삭제 후 같은 채널 재전송 성공")
+                # print("_update_existing_message_with_fallback: 삭제 후 같은 채널 재전송 성공")
             except Exception as e_send:
                 print("_update_existing_message_with_fallback: 삭제 후 채널 재전송 실패, 에페메랄 시도:", type(e_send).__name__, e_send)
                 try:
                     await itx.followup.send(msg_content, view=new_view, ephemeral=True)
-                    print("_update_existing_message_with_fallback: 에페메랄 재전송 성공")
+                    # print("_update_existing_message_with_fallback: 에페메랄 재전송 성공")
                 except Exception as e_ep:
                     print("_update_existing_message_with_fallback: 에페메랄 재전송 실패, DM 시도:", type(e_ep).__name__, e_ep)
                     try:
                         dm = await itx.user.send(content=msg_content, view=new_view)
                         await self._record_last_message(user_id, yyyymmdd, dm)
-                        print("_update_existing_message_with_fallback: DM 재전송 성공")
+                        # print("_update_existing_message_with_fallback: DM 재전송 성공")
                     except Exception as e_dm:
                         print("_update_existing_message_with_fallback: DM 재전송 실패:", type(e_dm).__name__, e_dm)
 
@@ -438,20 +492,20 @@ class RoutineCog(commands.Cog):
             if itx.channel:
                 new_msg = await itx.channel.send(content=msg_content, view=new_view)
                 await self._record_last_message(user_id, yyyymmdd, new_msg)
-                print("_send_new_message_with_fallback: 채널 새 전송 성공")
+                # print("_send_new_message_with_fallback: 채널 새 전송 성공")
                 return
         except Exception as e_ch:
             print("_send_new_message_with_fallback: 채널 새 전송 실패, 에페메랄 시도:", type(e_ch).__name__, e_ch)
 
         try:
             await itx.followup.send(msg_content, view=new_view, ephemeral=True)
-            print("_send_new_message_with_fallback: 에페메랄 전송 성공")
+            # print("_send_new_message_with_fallback: 에페메랄 전송 성공")
         except Exception as e_ep:
             print("_send_new_message_with_fallback: 에페메랄 전송 실패, DM 시도:", type(e_ep).__name__, e_ep)
             try:
                 dm = await itx.user.send(content=msg_content, view=new_view)
                 await self._record_last_message(user_id, yyyymmdd, dm)
-                print("_send_new_message_with_fallback: DM 전송 성공")
+                # print("_send_new_message_with_fallback: DM 전송 성공")
             except Exception as e_dm:
                 print("_send_new_message_with_fallback: DM 전송 실패:", type(e_dm).__name__, e_dm)
 
@@ -479,12 +533,10 @@ class RoutineCog(commands.Cog):
 
         view = self._create_today_checkin_view(display, ld)
 
-        # 1차 시도: original response로 패널 전송
         primary_sent = await self._send_checkin_panel_primary(itx, user_id, ld, view)
         if primary_sent:
             return
 
-        # 2차 시도: 이미 응답이 된 상태거나 위에서 실패한 경우 followup 또는 채널/DM으로 전송
         await self._send_checkin_panel_fallback(itx, user_id, ld, view)
 
     async def handle_toggle_button(self, itx: discord.Interaction, rid: int, yyyymmdd: str):
@@ -526,3 +578,4 @@ class RoutineCog(commands.Cog):
 
 async def setup(bot: commands.Bot):
     await bot.add_cog(RoutineCog(bot))
+
