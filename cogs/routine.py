@@ -107,29 +107,39 @@ class RoutineCog(commands.Cog):
     async def _build_display_items(self, user_id: str, target_day: Any, now=None) -> List[Dict[str, Any]]:
         """주어진 날짜의 루틴 체크인 표시 데이터를 구성합니다.
 
-        - is_valid_day 필터 적용
-        - 체크인 상태에 따라 이모지(❌/✅/➡️) 부여
+        - target_day 기준으로 루틴 목록을 조회해야 과거 날짜 갱신 시 오늘 루틴이 섞이지 않습니다.
+        - is_valid_day 필터 적용 및 체크인 상태(❌/✅/➡️) 반영.
         """
         if now is None:
             now = now_kst()
 
+        # target_day 를 date 객체로 최대한 보정 (실패 시, local_day(now) 사용)
+        if isinstance(target_day, date):
+            ld = target_day
+        else:
+            try:
+                ld = date.fromisoformat(str(target_day))
+            except Exception:
+                ld = local_day(now)
+
         try:
-            routines = await routine_repo.prepare_checkin_for_date(user_id, now)
+            # 🔁 기존에는 `prepare_checkin_for_date(user_id, now)` 를 사용해서
+            # 항상 "오늘" 기준 루틴 목록을 가져오고 있었습니다.
+            # 과거 날짜 패널을 갱신할 때도 오늘 기준 루틴이 사용되는 버그의 원인이므로,
+            # 해당 날짜(ld) 기준으로 적용 가능한 루틴을 직접 조회합니다.
+            routines = await routine_repo.routines_applicable_for_date(user_id, ld)
         except Exception as e:
-            # 상위에서 처리할 수 있도록 예외를 다시 올립니다.
-            print("prepare_checkin_for_date 에러 (internal):", e)
+            print("routines_applicable_for_date 에러 (internal):", e)
             raise
 
-        # target_day가 date 객체가 아니면 가능한 경우 date로 변환
-        if hasattr(target_day, "isoformat"):
-            day_for_repo = target_day.isoformat()
-        else:
-            day_for_repo = str(target_day)
+        # 체크인 레코드용 날짜 문자열
+        day_for_repo = ld.isoformat()
 
         display: List[Dict[str, Any]] = []
         for r in routines:
             try:
-                if await is_valid_day(user_id, r.get("weekend_mode", "weekday"), target_day):
+                # weekend_mode / 요일 규칙이 변경될 수 있으므로 is_valid_day 로 한 번 더 확인
+                if await is_valid_day(user_id, r.get("weekend_mode", "weekday"), ld):
                     try:
                         ci = await checkin_repo.get_checkin(r["id"], day_for_repo)
                     except Exception:
@@ -578,4 +588,3 @@ class RoutineCog(commands.Cog):
 
 async def setup(bot: commands.Bot):
     await bot.add_cog(RoutineCog(bot))
-
