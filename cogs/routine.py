@@ -521,15 +521,25 @@ class RoutineCog(commands.Cog):
 
     # ------------------------ 공개 메서드 ------------------------
 
-    async def open_today_checkin_list(self, itx: discord.Interaction):
-        """오늘 일일 루틴 진행 상태 패널을 전송한다.
+    async def open_today_checkin_list(self, itx: discord.Interaction, target_date: str = None):
+        """일일 루틴 진행 상태 패널을 전송한다.
 
+        - target_date: YYYY-MM-DD 형식의 날짜 문자열. None이면 오늘 날짜 사용.
         - Interaction의 original response 메시지로 패널을 전송
         - 필요 시 followup 또는 DM으로만 보조 메시지를 사용
         """
         user_id = str(itx.user.id)
         now = now_kst()
-        ld = local_day(now)
+
+        # target_date 파라미터가 있으면 파싱, 없으면 오늘 날짜 사용
+        if target_date:
+            try:
+                ld = date.fromisoformat(target_date)
+            except (ValueError, TypeError):
+                await self._send_or_followup_error(itx, "날짜 형식이 올바르지 않습니다. YYYY-MM-DD 형식으로 입력해주세요. (예: 2025-01-15)")
+                return
+        else:
+            ld = local_day(now)
 
         try:
             display = await self._build_display_items(user_id, ld, now)
@@ -538,7 +548,8 @@ class RoutineCog(commands.Cog):
             return
 
         if not display:
-            await self._send_or_followup_error(itx, "오늘 체크인 대상 루틴이 없습니다.")
+            date_msg = "해당 날짜에" if target_date else "오늘"
+            await self._send_or_followup_error(itx, f"{date_msg} 체크인 대상 루틴이 없습니다.")
             return
 
         view = self._create_today_checkin_view(display, ld)

@@ -16,21 +16,22 @@ class UICog(commands.Cog):
     def __init__(self, bot: commands.Bot):
         self.bot = bot
 
-    @app_commands.command(name="checkin", description="오늘 일일 체크인 패널을 엽니다.")
-    async def checkin(self, interaction: discord.Interaction):
-        """일일 체크인 패널(오늘 루틴 진행 상태 + 토글 버튼)을 여는 명령"""
-        print("/checkin 실행 by", interaction.user)
+    @app_commands.command(name="checkin", description="일일 체크인 패널을 엽니다.")
+    @app_commands.describe(date="체크인 날짜 (YYYY-MM-DD 형식, 예: 2025-01-15). 비워두면 오늘 날짜.")
+    async def checkin(self, interaction: discord.Interaction, date: str = None):
+        """일일 체크인 패널(오늘 또는 특정 날짜 루틴 진행 상태 + 토글 버튼)을 여는 명령"""
+        print(f"/checkin 실행 by {interaction.user}, date={date}")
         cog = interaction.client.get_cog("RoutineCog")
         if cog:
             try:
-                await cog.open_today_checkin_list(interaction)
+                await cog.open_today_checkin_list(interaction, target_date=date)
             except Exception:
                 # 상세 에러는 콘솔에만 남기고, 사용자에게는 공통 에러 메시지 전송
                 try:
                     if not interaction.response.is_done():
-                        await interaction.response.send_message("오늘 체크인 열기 중 오류가 발생했습니다.", ephemeral=True)
+                        await interaction.response.send_message("체크인 열기 중 오류가 발생했습니다.", ephemeral=True)
                     else:
-                        await interaction.followup.send("오늘 체크인 열기 중 오류가 발생했습니다.", ephemeral=True)
+                        await interaction.followup.send("체크인 열기 중 오류가 발생했습니다.", ephemeral=True)
                 except Exception:
                     pass
         else:
