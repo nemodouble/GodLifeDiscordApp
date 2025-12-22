@@ -5,6 +5,7 @@ from typing import List, Optional, Tuple, Dict, Any
 
 from db.db import connect_db
 from domain.time_utils import is_valid_day, local_day, now_kst
+from repos import routine_repo
 
 
 def window_dates(scope: Optional[str], today_local: date) -> Optional[List[date]]:
@@ -91,9 +92,10 @@ async def count_done_days(routine_id: int, dates: Optional[List[date]]) -> Tuple
 async def count_valid_days(user_id: str, routine: Dict[str, Any], dates: Optional[List[date]]) -> Tuple[int, List[date]]:
     """주어진 날짜들 중 유효한(체크인이 요구되는) 날짜 수와 날짜 목록을 반환.
 
-    - is_valid_day(user_id, weekend_mode, d)가 True여야 함
-    - 사용자가 스킵(skipped=1)으로 표시한 날짜는 유효일에서 제외함
-    dates가 None이면 루틴 생성일 ~ 오늘 범위를 사용하도록 호출자가 결정해야 함.
+    정책:
+    - is_valid_day(user_id, weekend_mode, d) 가 True여야 함
+    - 사용자가 스킵(skipped=1)으로 표시한 날짜는 유효일에서 제외
+    - 루틴이 pause 상태인 날짜는 유효일에서 제외 (분모 제거)
     """
     if dates is None:
         return 0, []
@@ -123,6 +125,9 @@ async def count_valid_days(user_id: str, routine: Dict[str, Any], dates: Optiona
 
     valid_days: List[date] = []
     for d in dates:
+        # pause는 분모에서 제외
+        if routine_repo.is_paused_for_day(routine, d):
+            continue
         # is_valid_day는 async
         if not await is_valid_day(str(user_id), routine.get("weekend_mode", "weekday"), d):
             continue
@@ -145,14 +150,10 @@ async def _build_date_range(start: date, end: date) -> List[date]:
 
 
 async def calc_streak(user_id: str, routine: Dict[str, Any]) -> Tuple[int, int]:
-    """루틴의 유효일 기준 최대 연속 완료(max_streak)와 현재 진행중인 연속 완료(current_streak)를 계산하여 반환.
+    """루틴의 유효일 기준 최대/현재 streak를 계산.
 
-    알고리즘 요약:
-      - 루틴 생성일(created_at)을 시작으로 오늘까지 모든 날짜를 순회
-      - 각 날짜에 대해 is_valid_day 검사. 유효하지 않으면 건너뜀(연속성에 영향 없음)
-      - 유효한 날짜에 대해 체크인 레코드를 확인: skipped이면 건너뜀(중립), checked이면 완료로 간주(연속 증가), 그렇지 않으면 연속 종료
-      - max_streak은 전체 기간 동안의 최대 연속 완료 수
-      - current_streak은 가장 최신 유효일(오늘 포함)부터 거꾸로 가며 연속 완료된 날 수
+    pause 정책:
+    - pause 날짜는 streak 계산에서 유효일로 보지 않고 건너뜀(분모/연속성 모두 제외)
     """
     # 오늘의 local_day
     today = local_day(now_kst())
@@ -180,11 +181,14 @@ async def calc_streak(user_id: str, routine: Dict[str, Any]) -> Tuple[int, int]:
     running = 0
     # 전체 최대 연속 계산(순방향)
     for d in all_dates:
+        # pause면 streak/유효일에서 제외
+        if routine_repo.is_paused_for_day(routine, d):
+            continue
         if not await is_valid_day(str(user_id), routine.get("weekend_mode", "weekday"), d):
             continue
         rec = rec_map.get(d)
         if rec and rec.get("skipped"):
-            # 스킵은 중립: 연속을 끊지 않음, 그러나 완료수에는 포함되지 않음
+            # 스킵은 중립: 연속을 끊지 않음
             continue
         if rec and rec.get("checked_at"):
             running += 1
@@ -196,6 +200,9 @@ async def calc_streak(user_id: str, routine: Dict[str, Any]) -> Tuple[int, int]:
     # 현재 연속(역방향)
     current_streak = 0
     for d in reversed(all_dates):
+        # pause면 streak/유효일에서 제외
+        if routine_repo.is_paused_for_day(routine, d):
+            continue
         if not await is_valid_day(str(user_id), routine.get("weekend_mode", "weekday"), d):
             continue
         rec = rec_map.get(d)
@@ -205,10 +212,21 @@ async def calc_streak(user_id: str, routine: Dict[str, Any]) -> Tuple[int, int]:
         if rec and rec.get("checked_at"):
             current_streak += 1
             continue
-        # 유효한 날이면서 완료도 아니고 스킵도 아니면 현재 연속 종료
         break
 
     return max_streak, current_streak
+
+
+async def count_paused_days(routine: Dict[str, Any], dates: Optional[List[date]]) -> Tuple[int, List[date]]:
+    """주어진 날짜들 중 루틴이 pause 상태인 날짜 수와 날짜 목록을 반환.
+
+    - pause는 통계 분모/스트릭에서 제외되므로, 리포트 투명성(설명용) 지표로만 사용한다.
+    """
+    if not dates:
+        return 0, []
+
+    paused = [d for d in dates if routine_repo.is_paused_for_day(routine, d)]
+    return len(paused), paused
 
 
 async def aggregate_user_metrics(user_id: str, routines: List[Dict[str, Any]], scope: Optional[str], today_local: Optional[date] = None) -> Dict[str, Any]:
@@ -223,6 +241,7 @@ async def aggregate_user_metrics(user_id: str, routines: List[Dict[str, Any]], s
     total_rate = 0.0
     total_done = 0
     total_valid = 0
+    total_paused = 0
     for r in routines:
         # 범위 날짜 리스트 계산
         dates = window_dates(scope, today_local)
@@ -236,6 +255,7 @@ async def aggregate_user_metrics(user_id: str, routines: List[Dict[str, Any]], s
             else:
                 dates = await _build_date_range(start, end)
 
+        paused_count, _ = await count_paused_days(r, dates)
         valid_count, valid_days = await count_valid_days(str(user_id), r, dates)
         done_count, _ = await count_done_days(r["id"], valid_days)
         rate = (done_count / max(1, valid_count)) if valid_count > 0 else 0.0
@@ -247,6 +267,7 @@ async def aggregate_user_metrics(user_id: str, routines: List[Dict[str, Any]], s
             "rate": rate,
             "done": done_count,
             "valid": valid_count,
+            "paused_days": paused_count,
             "max_streak": max_streak,
             "current_streak": current_streak,
         })
@@ -254,7 +275,16 @@ async def aggregate_user_metrics(user_id: str, routines: List[Dict[str, Any]], s
         total_rate += rate
         total_done += done_count
         total_valid += valid_count
+        total_paused += paused_count
 
     avg_rate = (total_rate / len(results)) if results else 0.0
 
-    return {"by_routine": results, "summary": {"avg_rate": avg_rate, "total_done": total_done, "total_valid": total_valid}}
+    return {
+        "by_routine": results,
+        "summary": {
+            "avg_rate": avg_rate,
+            "total_done": total_done,
+            "total_valid": total_valid,
+            "total_paused_days": total_paused,
+        },
+    }

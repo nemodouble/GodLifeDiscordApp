@@ -113,11 +113,13 @@ class ReportCog(commands.Cog):
         avg_rate = summary.get("avg_rate", 0.0) * 100
         total_done = summary.get("total_done", 0)
         total_valid = summary.get("total_valid", 0)
+        total_paused_days = summary.get("total_paused_days", 0)
         embed.add_field(
             name="전체 요약",
             value=(
                 f"평균 달성률: **{avg_rate:.1f}%**\n"
-                f"완료 횟수: **{total_done}회** / 유효 일수: **{total_valid}일**"
+                f"완료 횟수: **{total_done}회** / 유효 일수: **{total_valid}일**\n"
+                f"정지(⏸️)로 제외된 일수: **{total_paused_days}일**"
             ),
             inline=False,
         )
@@ -138,12 +140,15 @@ class ReportCog(commands.Cog):
             rate = r.get("rate", 0.0) * 100
             done = r.get("done", 0)
             valid = r.get("valid", 0)
+            paused_days = r.get("paused_days", 0)
             max_streak = r.get("max_streak", 0)
             current_streak = r.get("current_streak", 0)
             name = r.get("name", "(이름 없음)")
 
             line = (
-                f"**{name}** — {rate:.1f}% ({done}/{valid})\n"
+                f"**{name}** — {rate:.1f}% ({done}/{valid})"
+                + (f"  ⏸️{paused_days}일" if paused_days else "")
+                + "\n"
                 f"  · 최대 연속: {max_streak}일, 현재 연속: {current_streak}일"
             )
             lines.append(line)

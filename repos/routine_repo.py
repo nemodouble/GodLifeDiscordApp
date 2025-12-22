@@ -78,8 +78,74 @@ async def list_active_routines_for_user(user_id: str) -> List[dict]:
         await conn.close()
 
 
+def _boolish(v) -> bool:
+    try:
+        return bool(int(v))
+    except Exception:
+        return bool(v)
+
+
+def is_paused_for_day(routine: dict, d: date) -> bool:
+    """루틴이 주어진 날짜(d, local_day 기준)에 pause 상태인지 판단.
+
+    정책:
+    - paused=1 이면 무기한 pause
+    - paused_until 이 설정되어 있으면, d <= paused_until 인 동안 pause
+    - 둘 다 없으면 active
+
+    주의: DB에 컬럼이 아직 없을 수도 있으므로 dict.get 기반으로 방어적으로 처리.
+    """
+    if _boolish(routine.get("paused", 0)):
+        return True
+
+    pu = routine.get("paused_until")
+    if not pu:
+        return False
+
+    try:
+        until_d = date.fromisoformat(str(pu))
+    except Exception:
+        return False
+
+    return d <= until_d
+
+
+async def set_paused(routine_id: int, paused: bool, paused_until: Optional[str] = None) -> None:
+    """루틴의 pause 상태를 설정한다.
+
+    - paused=True: paused=1, paused_until은 그대로 두거나(옵션) 함께 세팅 가능
+    - paused=False: paused=0, paused_until=NULL (해제 시 기간 pause도 함께 해제)
+
+    paused_until: 'YYYY-MM-DD' 또는 None
+    """
+    fields = {}
+    if paused:
+        fields["paused"] = 1
+        if paused_until is not None:
+            fields["paused_until"] = paused_until
+    else:
+        fields["paused"] = 0
+        fields["paused_until"] = None
+
+    await update_routine(routine_id, **fields)
+
+
+async def toggle_paused(routine_id: int) -> bool:
+    """루틴 pause 토글. 새 paused 상태(True=paused)를 반환."""
+    r = await get_routine(routine_id)
+    if not r:
+        raise ValueError(f"routine not found: {routine_id}")
+    new_paused = not _boolish(r.get("paused", 0))
+    await set_paused(routine_id, new_paused)
+    return new_paused
+
+
 async def routines_applicable_for_date(user_id: str, d: date) -> List[dict]:
-    """주어진 날짜(local_day) 기준으로 적용 가능한(주말모드에 맞는) 활성 루틴 목록을 반환한다."""
+    """주어진 날짜(local_day) 기준으로 적용 가능한(주말모드에 맞는) 활성 루틴 목록을 반환.
+
+    주의: pause 여부는 여기서 제외하지 않고, 호출자(체크인 UI/스케줄러/통계)가
+    정책에 맞게 별도로 처리하도록 둔다.
+    """
     conn = await connect_db()
     try:
         cur = await conn.execute(
