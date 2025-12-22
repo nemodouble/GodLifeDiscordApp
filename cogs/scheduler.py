@@ -154,9 +154,6 @@ class SchedulerCog(commands.Cog):
         for r in routines:
             try:
                 if await is_valid_day(user_id, r.get("weekend_mode", "weekday"), ld):
-                    # pause 루틴은 알림 대상에서 제외
-                    if routine_repo.is_paused_for_day(r, ld):
-                        continue
                     valid.append(r)
             except Exception as e:
                 print("daily_prompt: is_valid_day error:", e)
@@ -187,10 +184,6 @@ class SchedulerCog(commands.Cog):
             return
         if routine is None:
             return
-        # pause 루틴은 deadline 리마인더 대상에서 제외
-        if routine_repo.is_paused_for_day(routine, ld):
-            self.sent_keys.add(key)
-            return
         try:
             if not await is_valid_day(user_id, routine.get("weekend_mode", "weekday"), ld):
                 self.sent_keys.add(key)
@@ -216,8 +209,6 @@ class SchedulerCog(commands.Cog):
             for r in routines:
                 try:
                     if await is_valid_day(user_id, r.get("weekend_mode", "weekday"), ld):
-                        if routine_repo.is_paused_for_day(r, ld):
-                            continue
                         valid.append(r)
                 except Exception:
                     continue

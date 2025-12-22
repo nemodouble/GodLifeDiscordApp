@@ -36,9 +36,7 @@ CREATE TABLE IF NOT EXISTS routine (
   deadline_time TEXT,
   notes TEXT,
   active INTEGER NOT NULL DEFAULT 1,
-  created_at TEXT NOT NULL,
-  paused INTEGER NOT NULL DEFAULT 0,
-  paused_until TEXT
+  created_at TEXT NOT NULL
 );
 
 CREATE TABLE IF NOT EXISTS routine_checkin (

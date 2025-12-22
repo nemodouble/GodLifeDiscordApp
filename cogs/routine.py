@@ -108,7 +108,7 @@ class RoutineCog(commands.Cog):
         """주어진 날짜의 루틴 체크인 표시 데이터를 구성합니다.
 
         - target_day 기준으로 루틴 목록을 조회해야 과거 날짜 갱신 시 오늘 루틴이 섞이지 않습니다.
-        - is_valid_day 필터 적용 및 체크인 상태(❌/✅/➡️/⏸️) 반영.
+        - is_valid_day 필터 적용 및 체크인 상태(❌/✅/➡️) 반영.
         """
         if now is None:
             now = now_kst()
@@ -140,11 +140,6 @@ class RoutineCog(commands.Cog):
             try:
                 # weekend_mode / 요일 규칙이 변경될 수 있으므로 is_valid_day 로 한 번 더 확인
                 if await is_valid_day(user_id, r.get("weekend_mode", "weekday"), ld):
-                    # pause 상태면 체크인 대신 pause로 표시 (통계/분모에서 제외 정책)
-                    if routine_repo.is_paused_for_day(r, ld):
-                        display.append({"id": r["id"], "name": f"⏸️ {r['name']}"})
-                        continue
-
                     try:
                         ci = await checkin_repo.get_checkin(r["id"], day_for_repo)
                     except Exception:
@@ -361,39 +356,12 @@ class RoutineCog(commands.Cog):
     async def _toggle_checkin_state(self, rid: int, user_id: str, yyyymmdd: str) -> str:
         """체크인 상태를 토글하고 새 상태 문자열을 반환합니다.
 
-        상태 순환 규칙(오늘/과거 날짜 공통):
-        - pause 해제 확인용 토큰: '__unpause_confirm__' (내부용)
-
-        - pause 상태(루틴 paused) -> (확인 없으면) '__unpause_confirm__' 반환
-        - pause 상태(루틴 paused) -> (확인 완료) pause 해제 후 '미완료' 반환
-
+        상태 순환 규칙:
         - (기록 없음 또는 미완료) -> 완료
         - 완료(checked_at 있음) -> 스킵
-        - 스킵(skipped=1) -> pause (루틴 전체 pause)
-        - pause -> (위 규칙)
-
-        주의:
-        - pause는 '해당 날짜의 이벤트'가 아니라 '루틴 상태'이므로 routine table을 업데이트합니다.
-        - pause 상태일 때는 done/skip/yet 토글이 아니라, 먼저 pause 해제 여부를 확인합니다.
+        - 스킵(skipped=1) -> 미완료(모든 상태 클리어)
+        그 외에는 방어적으로 미완료로 초기화합니다.
         """
-        # 날짜 파싱 (pause_until 지원을 위해 date 객체 필요)
-        try:
-            d = date.fromisoformat(str(yyyymmdd))
-        except Exception:
-            d = local_day(now_kst())
-
-        # 0) 루틴 pause 상태면: 해제 확인 필요
-        try:
-            r = await routine_repo.get_routine(rid)
-        except Exception as e:
-            print("_toggle_checkin_state: get_routine 에러:", e)
-            raise
-
-        if r and routine_repo.is_paused_for_day(r, d):
-            # 실제 해제는 handle_toggle_button에서 confirm 플로우로 처리
-            return "__unpause_confirm__"
-
-        # 1) 체크인 레코드 기반 토글
         try:
             ci = await checkin_repo.get_checkin(rid, yyyymmdd)
         except Exception as e:
@@ -411,10 +379,10 @@ class RoutineCog(commands.Cog):
                 await checkin_repo.skip_checkin(rid, user_id, yyyymmdd, reason="(사용자 버튼 스킵)")
                 return "스킵"
 
-            # 3) 스킵 상태 -> pause (루틴 전체 pause)
+            # 3) 스킵 상태 -> 미완료(클리어)
             if ci.get("skipped"):
-                await routine_repo.set_paused(rid, True)
-                return "정지"
+                await checkin_repo.clear_checkin(rid, yyyymmdd)
+                return "미완료"
 
             # 4) 기타 애매한 상태도 안전하게 미완료로 초기화
             await checkin_repo.clear_checkin(rid, yyyymmdd)
@@ -595,9 +563,9 @@ class RoutineCog(commands.Cog):
     async def handle_toggle_button(self, itx: discord.Interaction, rid: int, yyyymmdd: str):
         """체크인 토글 버튼 핸들러
 
-        - 상태 순환: 미완료 -> 완료 -> 스킵 -> 정지(루틴 pause)
-        - 정지 해제는 확인(confirm) 필요: 임페메랄로 재경고 메시지를 띄우고
-          10초 내 같은 버튼을 다시 누르면 해제되도록 한다.
+        - 상태 순환: 미완료 -> 완료 -> 스킵 -> 미완료
+        - Interaction의 original 메시지를 가능하면 수정(edit)하고,
+          실패 시 채널/임페리얼/DM 순으로 새 메시지를 전송
         """
         if not itx.response.is_done():
             try:
@@ -607,11 +575,6 @@ class RoutineCog(commands.Cog):
 
         user_id = str(itx.user.id)
 
-        # (user_id, day) 단위로 pause 해제 confirm 캐시
-        key_confirm = (user_id, str(yyyymmdd), int(rid))
-        if not hasattr(self, "_unpause_confirm"):
-            self._unpause_confirm = {}  # type: ignore[attr-defined]
-
         try:
             new_status = await self._toggle_checkin_state(rid, user_id, yyyymmdd)
         except Exception:
@@ -619,40 +582,6 @@ class RoutineCog(commands.Cog):
                 await itx.followup.send("상태 조회/DB 처리 중 오류가 발생했습니다.", ephemeral=True)
             except Exception as e2:
                 print("handle_toggle_button: 상태/DB 오류 응답 실패:", type(e2).__name__, e2)
-            return
-
-        # pause 해제 confirm 플로우
-        if new_status == "__unpause_confirm__":
-            now_ts = datetime.utcnow().timestamp()
-            last_ts = self._unpause_confirm.get(key_confirm)
-            # 10초 이내 재클릭이면 해제
-            if last_ts and (now_ts - last_ts) <= 10:
-                try:
-                    await routine_repo.set_paused(rid, False)
-                    # 확인 토큰 제거
-                    try:
-                        del self._unpause_confirm[key_confirm]
-                    except Exception:
-                        pass
-                    await itx.followup.send("정지가 해제되었습니다. 다시 체크인할 수 있어요.", ephemeral=True)
-                except Exception as e:
-                    print("unpause 실패:", type(e).__name__, e)
-                    await itx.followup.send("정지 해제 중 오류가 발생했습니다.", ephemeral=True)
-                    return
-                # 패널 갱신
-                try:
-                    await self._rebuild_and_send_updated_panel(itx, user_id, yyyymmdd)
-                except Exception as e:
-                    print("unpause 후 메시지 갱신 오류:", type(e).__name__, e)
-                return
-
-            # 첫 클릭: 재경고
-            self._unpause_confirm[key_confirm] = now_ts
-            await itx.followup.send(
-                "이 루틴은 현재 '정지(⏸️)' 상태입니다. 정지를 해제하면 다시 체크인 대상이 됩니다.\n"
-                "정말 해제하려면 10초 안에 같은 버튼을 한 번 더 눌러주세요.",
-                ephemeral=True,
-            )
             return
 
         try:
