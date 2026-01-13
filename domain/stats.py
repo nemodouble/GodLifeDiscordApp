@@ -211,45 +211,80 @@ async def calc_streak(user_id: str, routine: Dict[str, Any]) -> Tuple[int, int]:
     return max_streak, current_streak
 
 
-async def aggregate_user_metrics(user_id: str, routines: List[Dict[str, Any]], scope: Optional[str], today_local: Optional[date] = None) -> Dict[str, Any]:
+async def aggregate_user_metrics(
+    user_id: str,
+    routines: List[Dict[str, Any]],
+    scope: Optional[str],
+    today_local: Optional[date] = None,
+    *,
+    season_start: Optional[date] = None,
+    season_end: Optional[date] = None,
+) -> Dict[str, Any]:
     """사용자 전체(루틴별 동등 가중치) 합산 지표를 계산하여 반환.
 
-    개선: all 범위에서도 오늘(today_local)은 제외하고, 루틴 시작일 ~ (today_local - 1) 사이만 집계한다.
+    - today_local(기준일)은 기본 now_kst()의 local_day
+    - 기본 정책: 오늘(today_local)은 항상 제외하고, 어제까지 집계
+    - season_start/season_end가 주어지면, 해당 시즌 범위 안에서만 집계
+      (scope=7d/30d/all 모두 동일하게 시즌 범위를 '상한/하한'으로 씀)
     """
     if today_local is None:
         today_local = local_day(now_kst())
+
+    # 리포트는 오늘 제외
+    default_end = today_local - timedelta(days=1)
+    if season_end is not None:
+        default_end = min(default_end, season_end)
+
+    # 시즌 시작/종료가 역전되면 빈 집계
+    if season_start is not None and default_end < season_start:
+        return {"by_routine": [], "summary": {"avg_rate": 0.0, "total_done": 0, "total_valid": 0}}
 
     results = []
     total_rate = 0.0
     total_done = 0
     total_valid = 0
+
     for r in routines:
-        # 범위 날짜 리스트 계산
-        dates = window_dates(scope, today_local)
-        if dates is None:
-            # all: 시작일 ~ 어제(today_local - 1)
+        # 스코프 기본 윈도우(끝은 항상 오늘-1 기준)
+        end = default_end
+
+        if scope in ("7d", "30d"):
+            days = 7 if scope == "7d" else 30
+            start = end - timedelta(days=days - 1)
+        else:
+            # all
             start = await _routine_start_date(r, today_local)
-            end = today_local - timedelta(days=1)
-            # 시작일이 end를 넘어가면 집계할 날짜 없음
-            if start > end:
-                dates = []
-            else:
-                dates = await _build_date_range(start, end)
+
+        # 시즌 하한 적용
+        if season_start is not None:
+            start = max(start, season_start)
+
+        # 루틴 자체 시작일 하한 적용(all이 아니어도 적용되게)
+        routine_start = await _routine_start_date(r, today_local)
+        start = max(start, routine_start)
+
+        # start > end면 빈 범위
+        if start > end:
+            dates: List[date] = []
+        else:
+            dates = await _build_date_range(start, end)
 
         valid_count, valid_days = await count_valid_days(str(user_id), r, dates)
         done_count, _ = await count_done_days(r["id"], valid_days)
         rate = (done_count / max(1, valid_count)) if valid_count > 0 else 0.0
         max_streak, current_streak = await calc_streak(str(user_id), r)
 
-        results.append({
-            "id": r["id"],
-            "name": r.get("name"),
-            "rate": rate,
-            "done": done_count,
-            "valid": valid_count,
-            "max_streak": max_streak,
-            "current_streak": current_streak,
-        })
+        results.append(
+            {
+                "id": r["id"],
+                "name": r.get("name"),
+                "rate": rate,
+                "done": done_count,
+                "valid": valid_count,
+                "max_streak": max_streak,
+                "current_streak": current_streak,
+            }
+        )
 
         total_rate += rate
         total_done += done_count
@@ -257,4 +292,7 @@ async def aggregate_user_metrics(user_id: str, routines: List[Dict[str, Any]], s
 
     avg_rate = (total_rate / len(results)) if results else 0.0
 
-    return {"by_routine": results, "summary": {"avg_rate": avg_rate, "total_done": total_done, "total_valid": total_valid}}
+    return {
+        "by_routine": results,
+        "summary": {"avg_rate": avg_rate, "total_done": total_done, "total_valid": total_valid},
+    }

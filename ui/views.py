@@ -55,8 +55,18 @@ class MainPanelView(discord.ui.View):
     @discord.ui.button(label="리포트", custom_id="ui:report:menu")
     async def btn_report(self, itx: discord.Interaction, btn: discord.ui.Button):
         print("MainPanelView: 리포트 버튼 클릭 by", itx.user)
-        # 간단히 리포트 범위 선택 뷰를 띄움
-        await itx.response.send_message("리포트 범위를 선택하세요.", view=ReportScopeView(), ephemeral=True)
+        # 시즌 기반 리포트 메뉴로 위임
+        cog = itx.client.get_cog("ReportCog")
+        if cog and hasattr(cog, "open_report_menu"):
+            try:
+                await cog.open_report_menu(itx)
+            except Exception as e:
+                print("ReportCog.open_report_menu 에러:", e)
+                # fallback: 기존 범위 선택
+                await itx.response.send_message("리포트 범위를 선택하세요.", view=ReportScopeView(), ephemeral=True)
+        else:
+            # fallback: 기존 범위 선택
+            await itx.response.send_message("리포트 범위를 선택하세요.", view=ReportScopeView(), ephemeral=True)
 
     @discord.ui.button(label="설정", custom_id="ui:settings")
     async def btn_settings(self, itx: discord.Interaction, btn: discord.ui.Button):

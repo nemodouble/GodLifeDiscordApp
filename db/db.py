@@ -28,6 +28,19 @@ CREATE TABLE IF NOT EXISTS user_settings (
   created_at TEXT NOT NULL
 );
 
+-- (확장) 리포트 시즌(다시 마음먹기)
+CREATE TABLE IF NOT EXISTS report_season (
+  id INTEGER PRIMARY KEY AUTOINCREMENT,
+  user_id TEXT NOT NULL,
+  title TEXT NOT NULL DEFAULT '시즌',
+  start_day TEXT NOT NULL,
+  end_day TEXT,
+  created_at TEXT NOT NULL,
+  closed_at TEXT,
+  is_active INTEGER NOT NULL DEFAULT 1
+);
+CREATE INDEX IF NOT EXISTS idx_report_season_user_start ON report_season(user_id, start_day);
+
 CREATE TABLE IF NOT EXISTS routine (
   id INTEGER PRIMARY KEY AUTOINCREMENT,
   user_id TEXT NOT NULL,
@@ -36,7 +49,8 @@ CREATE TABLE IF NOT EXISTS routine (
   deadline_time TEXT,
   notes TEXT,
   active INTEGER NOT NULL DEFAULT 1,
-  created_at TEXT NOT NULL
+  created_at TEXT NOT NULL,
+  order_index INTEGER
 );
 
 CREATE TABLE IF NOT EXISTS routine_checkin (
@@ -83,6 +97,91 @@ CREATE INDEX IF NOT EXISTS idx_goal_user ON goal(user_id, active);
 """
 
 
+async def _ensure_routine_order_index(db: aiosqlite.Connection) -> None:
+    """기존 DB에 routine.order_index 컬럼이 없으면 추가하고, NULL 값은 user_id별 id 순서로 초기화."""
+    cur = await db.execute("PRAGMA table_info(routine)")
+    cols = [r[1] for r in await cur.fetchall()]  # (cid, name, type, notnull, dflt_value, pk)
+    await cur.close()
+
+    if "order_index" not in cols:
+        await db.execute("ALTER TABLE routine ADD COLUMN order_index INTEGER")
+
+    # NULL 인 값들만 user_id별 id 순서로 채우기
+    cur = await db.execute("SELECT id, user_id FROM routine WHERE order_index IS NULL ORDER BY user_id, id")
+    rows = await cur.fetchall()
+    await cur.close()
+
+    idx_by_user: dict[str, int] = {}
+    for rid, uid in rows:
+        uid = str(uid)
+        idx_by_user[uid] = idx_by_user.get(uid, 0) + 1
+        await db.execute("UPDATE routine SET order_index = ? WHERE id = ?", (idx_by_user[uid], rid))
+
+
+async def _fix_season_start_day_to_first_checkin(db: aiosqlite.Connection) -> None:
+    """시즌 도입 초기에 '오늘부터 시작'으로 잘못 만들어진 1개짜리 시즌을 과거 체크인 포함으로 보정.
+
+    안전 조건:
+    - report_season이 존재
+    - 해당 user_id의 시즌 수가 정확히 1개
+    - 그 시즌의 start_day가 오늘(서버 기준 date('now'))
+    - routine_checkin에 더 이른 first_checkin_day(MIN(local_day), done/skipped=0)가 존재
+
+    이때에만 start_day를 first_checkin_day로 수정한다.
+    """
+    # 보고서 시즌 테이블이 아예 없는 DB면 스킵
+    cur = await db.execute("SELECT name FROM sqlite_master WHERE type='table' AND name='report_season'")
+    has = await cur.fetchone()
+    await cur.close()
+    if not has:
+        return
+
+    # user별 조건에 맞는 시즌을 찾아 업데이트
+    cur = await db.execute(
+        """
+        SELECT rs.user_id, rs.id AS season_id,
+               rs.start_day,
+               (
+                 SELECT MIN(local_day)
+                 FROM routine_checkin rc
+                 WHERE rc.user_id = rs.user_id AND rc.checked_at IS NOT NULL AND rc.skipped = 0
+               ) AS first_day,
+               (
+                 SELECT COUNT(1)
+                 FROM report_season r2
+                 WHERE r2.user_id = rs.user_id
+               ) AS season_cnt
+        FROM report_season rs
+        WHERE rs.start_day = date('now')
+        """
+    )
+    rows = await cur.fetchall()
+    await cur.close()
+
+    for r in rows:
+        user_id = r[0]
+        season_id = r[1]
+        first_day = r[3]
+        season_cnt = r[4]
+
+        if season_cnt != 1:
+            continue
+        if not first_day:
+            continue
+        # first_day가 오늘보다 이전일 때만 보정
+        try:
+            if str(first_day) >= str(r[2]):
+                continue
+        except Exception:
+            # 문자열 비교 실패 시에도 안전하게 스킵
+            continue
+
+        await db.execute(
+            "UPDATE report_season SET start_day = ? WHERE id = ? AND user_id = ?",
+            (str(first_day), int(season_id), str(user_id)),
+        )
+
+
 async def init_db(db_path: str | None = None) -> None:
     """Ensure DB file & directory exist and create tables/indexes if missing.
 
@@ -100,6 +199,11 @@ async def init_db(db_path: str | None = None) -> None:
         await db.execute("PRAGMA journal_mode = WAL;")
         # Execute schema
         await db.executescript(_SCHEMA_SQL)
+
+        # 자동 마이그레이션(기존 DB 보정)
+        await _ensure_routine_order_index(db)
+        await _fix_season_start_day_to_first_checkin(db)
+
         await db.commit()
 
 

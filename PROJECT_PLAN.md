@@ -1,5 +1,4 @@
-﻿
-# GodLife Discord Bot — MVP 기획서 (수정본 v0.2, 2025-11-11 (KST))
+﻿# GodLife Discord Bot — MVP 기획서 (수정본 v0.2, 2025-11-11 (KST))
 
 ## 0. 개요
 - 목적: 개인 루틴·목표 관리와 일일 리마인더를 **DM 중심 + 버튼/모달**로 제공합니다.
@@ -42,9 +41,13 @@
 - 목표 리스트, 각 항목에 **[+1 진행]** 버튼
 - **[목표 추가]** 모달: 제목, 주기(`일간/주간/월간`), 타깃(정수), 마감(선택), 이월(bool)
 
-### `/report` — 기간 선택 → 리포트
-- 버튼: **[전체][30일][7일]**
+### `/report` — 시즌 선택 → 기간 선택 → 리포트
+- 1단계: 시즌 선택(드롭다운/버튼)
+  - **[현재 시즌]** / **[이전 시즌들]** / **[➕ 새 시즌 시작(다시 마음먹기)]**
+  - 시즌 선택 후 2단계 버튼 View로 전환
+- 2단계: 기간 선택 버튼: **[전체][30일][7일]**
 - 선택 시 임베드 리포트(달성률·스테REAK·요약)
+  - “전체”는 **선택된 시즌 전체**를 의미
 
 ### `/settings` — 설정 모달
 - 리마인더 기본 시각(HH:MM) 입력
@@ -58,7 +61,10 @@
 ### 버튼 `custom_id` 규칙
 - 루틴: `rt:done|undo|skip:<routine_id>:<yyyymmdd>`
 - 목표: `goal:inc:<goal_id>`
-- 리포트: `ui:report:<scope>` (`all|30d|7d`)
+- 리포트:
+  - 시즌 선택: `ui:report:season:<season_id>`
+  - 시즌 생성: `ui:report:season_new`
+  - 스코프: `ui:report:<scope>` (`all|30d|7d`)  
 - 설정: `ui:settings`
 
 ### 모달
@@ -88,6 +94,21 @@ CREATE TABLE user_settings (
   reminder_time TEXT NOT NULL DEFAULT '08:00',  -- HH:MM
   created_at TEXT NOT NULL
 );
+
+-- (확장) 리포트 시즌(다시 마음먹기)
+-- 목적: 유저는 여러 번 ‘새 시작’을 가질 수 있고, /report는 특정 시즌을 선택해 집계한다.
+-- 규칙: season_start_day는 시즌의 시작(local_day), season_end_day는 자동/수동으로 시즌의 끝(local_day)을 보관한다.
+CREATE TABLE report_season (
+  id INTEGER PRIMARY KEY AUTOINCREMENT,
+  user_id TEXT NOT NULL,
+  title TEXT NOT NULL DEFAULT '시즌',
+  start_day TEXT NOT NULL,        -- YYYY-MM-DD (04:00 경계 local_day)
+  end_day TEXT,                   -- YYYY-MM-DD (nullable; 계산/자동등록 가능)
+  created_at TEXT NOT NULL,
+  closed_at TEXT,
+  is_active INTEGER NOT NULL DEFAULT 1
+);
+CREATE INDEX idx_report_season_user_start ON report_season(user_id, start_day);
 
 -- 루틴
 CREATE TABLE routine (
@@ -161,6 +182,32 @@ CREATE INDEX idx_goal_user ON goal(user_id, active);
 - **스테REAK**: 유효 날짜 기준 연속 완료
 - **구간**: `all`, `last_30d`, `last_7d`
 - **목표 달성**: period 경계에서 `current >= target`이면 달성(이월은 carry_over 규칙 따름)
+
+### (확장) 시즌(Season) 기반 리포트
+- **시즌**: 유저의 “다시 마음먹기” 단위. 각 시즌은 시작일(start_day)을 가지며, /report에서 시즌을 선택해 해당 기간만 집계한다.
+- 시즌 선택 UX: `/report` → 시즌 선택 → `[전체][30일][7일]`
+- 시즌 구간 산정:
+  - `season_start = report_season.start_day`
+  - `season_end`는 아래 우선순위로 결정
+    1) `report_season.end_day`가 있으면 그것을 사용
+    2) 없으면 **자동 산정**: 다음 시즌이 있으면 `(next.start_day - 1일)`, 없으면 `(today_local - 1일)`
+- **요청 반영(중요): 시즌 종료일 자동 등록 규칙**
+  - 시즌이 ‘끝난 것처럼’ 보이게 하려면, 시즌별로 “유저가 마지막으로 루틴을 체크한 날”을 시즌의 끝으로 저장해 둘 수 있다.
+  - 정의: `last_checkin_day = MAX(routine_checkin.local_day) WHERE user_id=? AND checked_at IS NOT NULL AND skipped=0`
+  - 정책:
+    - 새 시즌을 시작할 때, 직전 시즌의 `end_day`가 비어있으면 `end_day = last_checkin_day`로 **자동 등록**한다.
+    - `last_checkin_day`가 없으면(체크인 기록 없음) 직전 시즌 `end_day`는 비워 둔다(또는 start_day로 설정하는 옵션).
+    - 사용자가 이후 과거 날짜를 체크인하면(지연 입력), 시즌 end_day가 뒤로 밀릴 수 있는데,
+      - MVP에서는 “end_day는 참고값”으로 보고 **재계산/갱신을 허용**하거나,
+      - 안정성을 원하면 “시즌 닫기(locked)”를 도입해 이후 변경을 막는다(후순위).
+
+- 스코프 적용:
+  - `all`: `season_start ~ season_end`
+  - `30d`: `max(season_start, season_end-29) ~ season_end`
+  - `7d`: `max(season_start, season_end-6) ~ season_end`
+
+- ‘쉬는 기간’ 표시 원칙:
+  - 공휴일/주말모드/면책/스킵 등 **제외일(excluded)**은 분모에서 제외하며, 실패처럼 강조하지 않고 요약 카운트로만 표기 가능.
 
 ---
 

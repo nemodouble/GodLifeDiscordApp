@@ -5,6 +5,7 @@ import discord
 from discord.ext import commands
 
 from ui.views import MainPanelView  # 영속 뷰 등록
+from db.db import init_db
 
 load_dotenv()
 TOKEN = os.getenv("DISCORD_TOKEN")
@@ -32,6 +33,14 @@ async def on_ready():
 
 async def main():
     try:
+        # DB 스키마 초기화/마이그레이션(없으면 생성, 있으면 누락된 테이블/인덱스 추가)
+        try:
+            await init_db()
+            print("DB init/migration 완료")
+        except Exception as e:
+            print("DB init/migration 실패:", e)
+            raise
+
         # 코그 로드 시도 (open_cog 제거됨)
         try:
             await bot.load_extension("cogs.ui_cog")
